@@ -1,10 +1,11 @@
 use std::ffi::{CString, CStr};
 
 use ash::{self, vk};
-use ash_window;
 use winit::{self};
 use std::ptr;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+
+mod utility;
 
 // Constants
 const WINDOW_TITLE: &'static str = "Hello, Vulkan!";
@@ -19,10 +20,7 @@ struct VulkanApp {
 impl VulkanApp {
     pub fn new(window: &winit::window::Window) -> VulkanApp {
         // Init vulkan stuff
-        let entry = unsafe {
-            ash::Entry::load()
-                .expect("Unable to load ash entry")
-        };
+        let entry = ash::Entry::linked();
         let instance = VulkanApp::create_instance(&entry, window);
 
         VulkanApp {
@@ -46,10 +44,10 @@ impl VulkanApp {
             s_type: vk::StructureType::APPLICATION_INFO,
             p_next: ptr::null(),
             p_application_name: app_name.as_ptr(),
-            application_version: vk::make_api_version(0, 1, 0, 0),
+            application_version: 0,
             p_engine_name: engine_name.as_ptr(),
-            engine_version: vk::make_api_version(0, 1, 0, 0),
-            api_version: vk::API_VERSION_1_3,
+            engine_version: 0,
+            api_version: vk::make_api_version(0, 1, 3, 0),
         };
 
         // Extensions
@@ -61,9 +59,9 @@ impl VulkanApp {
             p_next: ptr::null(),
             flags: vk::InstanceCreateFlags::empty(),
             p_application_info: &app_info,
-            pp_enabled_extension_names: ptr::null(),
             enabled_layer_count: 0,
-            pp_enabled_layer_names: extensions_names.as_ptr(),
+            pp_enabled_layer_names: ptr::null(),
+            pp_enabled_extension_names: extensions_names.as_ptr(),
             enabled_extension_count: extensions_names.len() as u32,
         };
 
