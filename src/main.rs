@@ -1,15 +1,16 @@
-use std::ffi::{CString, CStr};
+use std::ffi::{c_void, CStr, CString};
 
 use ash::{self, vk};
-use utility::tools;
-use winit::{self};
+use raw_window_handle::HasRawDisplayHandle;
 use std::ptr;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use std::sync::{Arc, RwLock};
+use winit::{self};
 
+mod lv;
 mod utility;
 
 // Constants
-const WINDOW_TITLE: &'static str = "Hello, Vulkan!";
+const WINDOW_TITLE: &str = "Hello, Vulkan!";
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 
@@ -19,8 +20,10 @@ struct ValidationInfo {
 }
 
 struct VulkanApp {
-    _entry: ash::Entry,
-    instance: ash::Instance,
+    handle: Arc<lv::lv>,
+    debug_messenger: lv::DebugMessenger,
+    physical_device: Arc<lv::PhysicalDevice>,
+    logical_device: Arc<lv::Device>,
 }
 
 const VALIDATION: ValidationInfo = ValidationInfo {
@@ -33,21 +36,35 @@ impl VulkanApp {
         // Init vulkan stuff
         let entry = ash::Entry::linked();
         let instance = VulkanApp::create_instance(&entry, window);
+        let entry = Arc::new(lv::lv {
+            instance: Arc::new(RwLock::new(instance)),
+            entry: Arc::new(RwLock::new(entry)),
+        });
+
+        // debug messenger
+        let debug_messenger = lv::DebugMessenger::new(entry.clone());
+        let physical_device = Arc::new(VulkanApp::pick_physical_device(entry.clone()).unwrap());
+        let logical_device = Arc::new(lv::Device::new(
+            physical_device.clone(),
+            None,
+            entry.clone(),
+        ));
 
         VulkanApp {
-            _entry: entry,
-            instance: instance
+            handle: entry,
+            debug_messenger,
+            physical_device,
+            logical_device,
         }
     }
 
     fn check_validation_layer_support(entry: &ash::Entry) -> bool {
-        let layer_count: u32;
         let layer_properties = entry
             .enumerate_instance_layer_properties()
             .expect("Failed to enumerate instance layer properties");
-        
-        if layer_properties.len() <= 0 {
-            eprintln!("No avaliable layers.");
+
+        if layer_properties.is_empty() {
+            eprintln!("No available layers.");
             return false;
         } else {
             for required_layer_name in VALIDATION.required_validation_layers.iter() {
@@ -95,18 +112,36 @@ impl VulkanApp {
         };
 
         // Extensions
-        let mut extensions_names = ash_window::enumerate_required_extensions(window.raw_display_handle()).unwrap().to_vec();
-        extensions_names.push(ash::extensions::ext::DebugUtils::name().as_ptr());
+        let extensions = VulkanApp::get_required_extensions(entry, window);
+
+        let reqiured_validation_layer_raw_names: Vec<CString> = VALIDATION
+            .required_validation_layers
+            .iter()
+            .map(|layer_name| CString::new(*layer_name).unwrap())
+            .collect();
+
+        let enabled_layer_names: Vec<*const i8> = reqiured_validation_layer_raw_names
+            .iter()
+            .map(|layer_name| layer_name.as_ptr())
+            .collect();
 
         let create_info = vk::InstanceCreateInfo {
             s_type: vk::StructureType::INSTANCE_CREATE_INFO,
             p_next: ptr::null(),
             flags: vk::InstanceCreateFlags::empty(),
             p_application_info: &app_info,
-            enabled_layer_count: 0,
-            pp_enabled_layer_names: ptr::null(),
-            pp_enabled_extension_names: extensions_names.as_ptr(),
-            enabled_extension_count: extensions_names.len() as u32,
+            enabled_layer_count: if VALIDATION.is_enabled {
+                enabled_layer_names.len()
+            } else {
+                0
+            } as u32,
+            pp_enabled_layer_names: if VALIDATION.is_enabled {
+                enabled_layer_names.as_ptr()
+            } else {
+                ptr::null()
+            },
+            pp_enabled_extension_names: extensions.as_ptr(),
+            enabled_extension_count: extensions.len() as u32,
         };
 
         let instance: ash::Instance = unsafe {
@@ -118,40 +153,78 @@ impl VulkanApp {
         instance
     }
 
-    fn draw_frame(&mut self) {
-
+    fn is_device_suitable(device: &mut lv::PhysicalDevice) -> bool {
+        device.find_queue_families();
+        if device.properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+            && device.features.geometry_shader == vk::TRUE
+            && device.queue_families.graphics_family.is_some()
+        {
+            return true;
+        }
+        false
     }
 
-    pub fn main_loop(mut self, event_loop: winit::event_loop::EventLoop<()>, window: winit::window::Window) {
+    fn pick_physical_device(instance: Arc<lv::lv>) -> Option<lv::PhysicalDevice> {
+        let physical_devices = unsafe {
+            instance
+                .instance
+                .read()
+                .unwrap()
+                .enumerate_physical_devices()
+                .unwrap()
+        };
+        for physical_device in physical_devices {
+            let mut lv_device = lv::PhysicalDevice::new(physical_device, instance.clone());
+            if VulkanApp::is_device_suitable(&mut lv_device) {
+                return Some(lv_device);
+            }
+        }
+        None
+    }
+
+    fn get_required_extensions(
+        entry: &ash::Entry,
+        window: &winit::window::Window,
+    ) -> Vec<*const i8> {
+        // Extensions
+        let mut extensions_names =
+            ash_window::enumerate_required_extensions(window.raw_display_handle())
+                .unwrap()
+                .to_vec();
+
+        if VALIDATION.is_enabled {
+            extensions_names.push(ash::extensions::ext::DebugUtils::name().as_ptr());
+        }
+
+        extensions_names
+    }
+
+    fn draw_frame(&mut self) {}
+
+    pub fn main_loop(
+        self,
+        event_loop: winit::event_loop::EventLoop<()>,
+        window: winit::window::Window,
+    ) {
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-        event_loop.run(move |event, elwt|  {
-            match event {
-                winit::event::Event::WindowEvent { window_id, event } => {
-                    match event {
-                        winit::event::WindowEvent::CloseRequested => {
-                            println!("Exiting application!");
-                            elwt.exit();
-                        },
-                        winit::event::WindowEvent::RedrawRequested => {
-                            window.request_redraw();
-                        },
-                        _ => (),
+        event_loop
+            .run(move |event, elwt| match event {
+                winit::event::Event::WindowEvent { window_id, event } => match event {
+                    winit::event::WindowEvent::CloseRequested => {
+                        println!("Exiting application!");
+                        elwt.exit();
                     }
+                    winit::event::WindowEvent::RedrawRequested => {
+                        window.request_redraw();
+                    }
+                    _ => (),
                 },
                 winit::event::Event::AboutToWait => {
                     window.request_redraw();
-                },
-                _ => ()
-            }
-        });
-    }
-}
-
-impl Drop for VulkanApp {
-    fn drop(&mut self) {
-        unsafe {
-            self.instance.destroy_instance(None);
-        }
+                }
+                _ => (),
+            })
+            .expect("TODO: panic message");
     }
 }
 
