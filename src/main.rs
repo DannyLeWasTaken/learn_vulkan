@@ -1,7 +1,7 @@
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::CString;
 
 use ash::{self, vk};
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::ptr;
 use std::sync::{Arc, RwLock};
 use winit::{self};
@@ -22,6 +22,8 @@ struct ValidationInfo {
 struct VulkanApp {
     handle: Arc<lv::lv>,
     debug_messenger: lv::DebugMessenger,
+    surface_loader: Arc<ash::extensions::khr::Surface>,
+    surface: lv::Surface,
     physical_device: Arc<lv::PhysicalDevice>,
     logical_device: Arc<lv::Device>,
 }
@@ -30,6 +32,11 @@ const VALIDATION: ValidationInfo = ValidationInfo {
     is_enabled: true,
     required_validation_layers: ["VK_LAYER_KHRONOS_validation"],
 };
+
+const DEVICE_EXTENSIONS: [&str; 1] = ["VK_KHR_swapchain"];
+fn convert_static_str_to_string(vec_str: [&'static str; 1]) -> Vec<String> {
+    vec_str.into_iter().map(|s| s.to_string()).collect()
+}
 
 impl VulkanApp {
     pub fn new(window: &winit::window::Window) -> VulkanApp {
@@ -43,18 +50,54 @@ impl VulkanApp {
 
         // debug messenger
         let debug_messenger = lv::DebugMessenger::new(entry.clone());
-        let physical_device = Arc::new(VulkanApp::pick_physical_device(entry.clone()).unwrap());
+        let surface_loader = Arc::new(ash::extensions::khr::Surface::new(
+            entry.entry.read().as_ref().unwrap(),
+            entry.instance.read().as_ref().unwrap(),
+        ));
+        let surface = lv::Surface::new(
+            entry.clone(),
+            surface_loader.clone(),
+            window.raw_display_handle(),
+            window.raw_window_handle(),
+        );
+
+        let physical_device = Arc::new(
+            VulkanApp::pick_physical_device(entry.clone(), surface_loader.clone(), surface.handle)
+                .unwrap(),
+        );
         let logical_device = Arc::new(lv::Device::new(
             physical_device.clone(),
-            None,
+            Some(convert_static_str_to_string(DEVICE_EXTENSIONS)),
             entry.clone(),
         ));
+
+        let swapchain_loader = Arc::new(ash::extensions::khr::Swapchain::new(
+            &entry.instance.read().unwrap(),
+            &logical_device.handle,
+        ));
+        let swapchain_support =
+            physical_device.get_swapchain_support(surface_loader.as_ref(), surface.handle);
+        let swapchain = lv::Swapchain::new(
+            entry.clone(),
+            swapchain_loader.clone(),
+            physical_device.clone(),
+            logical_device.clone(),
+            surface.handle,
+            lv::SwapchainPreferred {
+                swapchain_support_details: swapchain_support,
+                preferred_format: &[vk::Format::R8G8B8_SRGB],
+                preferred_present_modes: &[vk::PresentModeKHR::MAILBOX],
+            },
+            window,
+        );
 
         VulkanApp {
             handle: entry,
             debug_messenger,
             physical_device,
             logical_device,
+            surface_loader,
+            surface,
         }
     }
 
@@ -153,18 +196,32 @@ impl VulkanApp {
         instance
     }
 
-    fn is_device_suitable(device: &mut lv::PhysicalDevice) -> bool {
-        device.find_queue_families();
-        if device.properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
-            && device.features.geometry_shader == vk::TRUE
-            && device.queue_families.graphics_family.is_some()
+    fn is_device_suitable(
+        physical_device: &mut lv::PhysicalDevice,
+        surface_loader: &ash::extensions::khr::Surface,
+        surface: vk::SurfaceKHR,
+    ) -> bool {
+        physical_device.find_queue_families(surface_loader, surface);
+        let swapchain_support = physical_device.get_swapchain_support(surface_loader, surface);
+
+        if physical_device.properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+            && physical_device.features.geometry_shader == vk::TRUE
+            && physical_device.has_extensions(convert_static_str_to_string(DEVICE_EXTENSIONS))
+            && !swapchain_support.formats.is_empty()
+            && !swapchain_support.present_modes.is_empty()
+            && physical_device.queue_families.graphics_family.is_some()
+            && physical_device.queue_families.present_family.is_some()
         {
             return true;
         }
         false
     }
 
-    fn pick_physical_device(instance: Arc<lv::lv>) -> Option<lv::PhysicalDevice> {
+    fn pick_physical_device(
+        instance: Arc<lv::lv>,
+        surface_loader: Arc<ash::extensions::khr::Surface>,
+        surface: vk::SurfaceKHR,
+    ) -> Option<lv::PhysicalDevice> {
         let physical_devices = unsafe {
             instance
                 .instance
@@ -175,7 +232,7 @@ impl VulkanApp {
         };
         for physical_device in physical_devices {
             let mut lv_device = lv::PhysicalDevice::new(physical_device, instance.clone());
-            if VulkanApp::is_device_suitable(&mut lv_device) {
+            if VulkanApp::is_device_suitable(&mut lv_device, &surface_loader, surface) {
                 return Some(lv_device);
             }
         }

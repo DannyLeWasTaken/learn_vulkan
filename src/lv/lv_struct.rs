@@ -1,6 +1,7 @@
 use crate::utility;
 use std::sync::{Arc, RwLock};
 
+#[derive(Clone)]
 pub struct lv {
     pub entry: Arc<RwLock<ash::Entry>>,
     pub instance: Arc<RwLock<ash::Instance>>,

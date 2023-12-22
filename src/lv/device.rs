@@ -1,31 +1,35 @@
 use crate::lv;
+use crate::lv::SwapchainSupportDetails;
+use crate::utility::tools::vk_to_string;
 use ash::vk;
-use ash::vk::BindIndexBufferIndirectCommandNV;
-use std::ptr;
+use std::collections::HashSet;
+use std::ffi::{c_char, CString};
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct QueueFamilyIndices {
     pub graphics_family: Option<u32>,
+    pub present_family: Option<u32>,
 }
 
+#[derive(Clone)]
 pub struct PhysicalDevice {
     pub handle: vk::PhysicalDevice,
-    pub properties: vk::PhysicalDeviceProperties,
-    pub features: vk::PhysicalDeviceFeatures,
+    pub properties: Arc<vk::PhysicalDeviceProperties>,
+    pub features: Arc<vk::PhysicalDeviceFeatures>,
     pub queue_families: QueueFamilyIndices,
-    _ash: Arc<lv::lv>,
+    lv: Arc<lv::lv>,
 }
 
 impl PhysicalDevice {
     pub fn new(vk_device: vk::PhysicalDevice, _ash: Arc<lv::lv>) -> PhysicalDevice {
-        let mut physical_device_properties = unsafe {
+        let physical_device_properties = unsafe {
             _ash.instance
                 .read()
                 .unwrap()
                 .get_physical_device_properties(vk_device)
         };
-        let mut physical_device_features = unsafe {
+        let physical_device_features = unsafe {
             _ash.instance
                 .read()
                 .unwrap()
@@ -34,18 +38,23 @@ impl PhysicalDevice {
 
         PhysicalDevice {
             handle: vk_device,
-            properties: physical_device_properties,
-            features: physical_device_features,
+            properties: Arc::new(physical_device_properties),
+            features: Arc::new(physical_device_features),
             queue_families: QueueFamilyIndices {
                 graphics_family: None,
+                present_family: None,
             },
-            _ash,
+            lv: _ash,
         }
     }
 
-    pub fn find_queue_families(&mut self) {
+    pub fn find_queue_families(
+        &mut self,
+        surface_loader: &ash::extensions::khr::Surface,
+        surface: vk::SurfaceKHR,
+    ) {
         let queue_family_properties = unsafe {
-            self._ash
+            self.lv
                 .instance
                 .read()
                 .unwrap()
@@ -54,8 +63,65 @@ impl PhysicalDevice {
         for (index, queue_family) in queue_family_properties.iter().enumerate() {
             if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                 self.queue_families.graphics_family = Some(index as u32);
-                break;
             }
+            if unsafe {
+                surface_loader
+                    .get_physical_device_surface_support(self.handle, index as u32, surface)
+                    .unwrap()
+            } {
+                self.queue_families.present_family = Some(index as u32);
+            }
+        }
+    }
+    pub fn has_extensions(&self, extensions: Vec<String>) -> bool {
+        let available_extensions = unsafe {
+            self.lv
+                .instance
+                .read()
+                .unwrap()
+                .enumerate_device_extension_properties(self.handle)
+                .unwrap()
+        };
+
+        let mut available_extensions_names: Vec<String> = vec![];
+        for extension in available_extensions.iter() {
+            let extension_name = vk_to_string(&extension.extension_name);
+            available_extensions_names.push(extension_name);
+        }
+
+        let mut required_extensions = HashSet::new();
+        for extension in extensions.iter() {
+            required_extensions.insert(extension.to_string());
+        }
+
+        for extension_name in available_extensions_names.iter() {
+            required_extensions.remove(extension_name);
+        }
+
+        required_extensions.is_empty()
+    }
+
+    pub fn get_swapchain_support(
+        &self,
+        surface_loader: &ash::extensions::khr::Surface,
+        surface: vk::SurfaceKHR,
+    ) -> SwapchainSupportDetails {
+        SwapchainSupportDetails {
+            capabilities: unsafe {
+                surface_loader
+                    .get_physical_device_surface_capabilities(self.handle, surface)
+                    .unwrap()
+            },
+            formats: unsafe {
+                surface_loader
+                    .get_physical_device_surface_formats(self.handle, surface)
+                    .unwrap()
+            },
+            present_modes: unsafe {
+                surface_loader
+                    .get_physical_device_surface_present_modes(self.handle, surface)
+                    .unwrap()
+            },
         }
     }
 }
@@ -63,37 +129,54 @@ impl PhysicalDevice {
 pub struct Device {
     pub handle: ash::Device,
     pub physical_device: Arc<PhysicalDevice>,
-    _ash: Arc<lv::lv>,
+    pub queues: Vec<lv::Queue>,
+    lv: Arc<lv::lv>,
 }
 
 impl Device {
     pub fn new(
         physical_device: Arc<PhysicalDevice>,
-        in_queue_families: Option<QueueFamilyIndices>,
+        required_extensions: Option<Vec<String>>,
         lv: Arc<lv::lv>,
     ) -> Device {
         // Determine which queue family to use
-        let queue_families: QueueFamilyIndices;
-        if (in_queue_families.is_none()) {
-            // use default queue families
-            queue_families = physical_device.queue_families.clone();
-        } else {
-            queue_families = in_queue_families.unwrap();
+        let queue_families: QueueFamilyIndices = physical_device.queue_families;
+        // TODO: deal with multiple queues
+        let unique_queue_families = vec![
+            queue_families.graphics_family.unwrap(),
+            queue_families.present_family.unwrap(),
+        ];
+        let mut queue_cis: Vec<vk::DeviceQueueCreateInfo> =
+            Vec::with_capacity(unique_queue_families.len());
+        for unique_queue in unique_queue_families {
+            let queue_ci = vk::DeviceQueueCreateInfo {
+                s_type: vk::StructureType::DEVICE_QUEUE_CREATE_INFO,
+                queue_family_index: unique_queue,
+                queue_count: 1,
+                p_queue_priorities: &1.0,
+                ..vk::DeviceQueueCreateInfo::default()
+            };
+
+            queue_cis.push(queue_ci);
         }
 
-        // TODO: deal with multiple queues
-        let mut queue_ci = vk::DeviceQueueCreateInfo::default();
-        queue_ci.s_type = vk::StructureType::DEVICE_QUEUE_CREATE_INFO;
-        queue_ci.queue_family_index = queue_families.graphics_family.unwrap();
-        queue_ci.queue_count = 1;
-        queue_ci.p_queue_priorities = &1.0;
+        let cstring_ext_names: Vec<CString> = required_extensions
+            .unwrap_or_default()
+            .iter()
+            .map(|s| CString::new(s.clone()).unwrap())
+            .collect();
+        let c_str_ptrs: Vec<*const c_char> = cstring_ext_names.iter().map(|s| s.as_ptr()).collect();
 
         let physical_device_features = vk::PhysicalDeviceFeatures::default();
-        let mut device_ci = vk::DeviceCreateInfo::default();
-        device_ci.s_type = vk::StructureType::DEVICE_CREATE_INFO;
-        device_ci.p_queue_create_infos = &queue_ci;
-        device_ci.queue_create_info_count = 1;
-        device_ci.p_enabled_features = &physical_device_features;
+        let device_ci = vk::DeviceCreateInfo {
+            s_type: vk::StructureType::DEVICE_CREATE_INFO,
+            p_queue_create_infos: queue_cis.as_ptr(),
+            queue_create_info_count: queue_cis.len() as u32,
+            p_enabled_features: &physical_device_features,
+            enabled_extension_count: c_str_ptrs.len() as u32,
+            pp_enabled_extension_names: c_str_ptrs.as_ptr(),
+            ..vk::DeviceCreateInfo::default()
+        };
 
         let device = unsafe {
             lv.instance
@@ -103,10 +186,15 @@ impl Device {
                 .unwrap()
         };
 
+        let queues = vec![
+            lv::Queue::new(queue_families.graphics_family.unwrap(), &device),
+            lv::Queue::new(queue_families.present_family.unwrap(), &device),
+        ];
         Device {
             handle: device,
             physical_device,
-            _ash: lv,
+            queues,
+            lv,
         }
     }
 }
