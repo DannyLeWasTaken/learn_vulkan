@@ -1,4 +1,5 @@
-use std::ffi::CString;
+use std::ffi::{c_char, CString};
+use std::ops::Deref;
 
 use ash::{self, vk};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -20,10 +21,9 @@ struct ValidationInfo {
 }
 
 struct VulkanApp {
-    handle: Arc<lv::lv>,
-    debug_messenger: lv::DebugMessenger,
-    surface_loader: Arc<ash::extensions::khr::Surface>,
-    surface: lv::Surface,
+    handle: Arc<lv::Instance>,
+    debug_messenger: Arc<lv::DebugMessenger>,
+    surface: Arc<lv::Surface>,
     physical_device: Arc<lv::PhysicalDevice>,
     logical_device: Arc<lv::Device>,
 }
@@ -43,44 +43,34 @@ impl VulkanApp {
         // Init vulkan stuff
         let entry = ash::Entry::linked();
         let instance = VulkanApp::create_instance(&entry, window);
-        let entry = Arc::new(lv::lv {
-            instance: Arc::new(RwLock::new(instance)),
-            entry: Arc::new(RwLock::new(entry)),
-        });
+        let entry = Arc::new(lv::Instance { instance, entry });
 
         // debug messenger
         let debug_messenger = lv::DebugMessenger::new(entry.clone());
-        let surface_loader = Arc::new(ash::extensions::khr::Surface::new(
-            entry.entry.read().as_ref().unwrap(),
-            entry.instance.read().as_ref().unwrap(),
-        ));
+        let surface_loader = ash::extensions::khr::Surface::new(&entry.entry, &entry.instance);
         let surface = lv::Surface::new(
-            entry.clone(),
+            &entry,
             surface_loader.clone(),
             window.raw_display_handle(),
             window.raw_window_handle(),
         );
 
-        let physical_device = Arc::new(
-            VulkanApp::pick_physical_device(entry.clone(), surface_loader.clone(), surface.handle)
-                .unwrap(),
-        );
-        let logical_device = Arc::new(lv::Device::new(
+        let physical_device =
+            VulkanApp::pick_physical_device(entry.clone(), &surface_loader, surface.handle)
+                .unwrap();
+        let logical_device = lv::Device::new(
             physical_device.clone(),
             Some(convert_static_str_to_string(DEVICE_EXTENSIONS)),
             entry.clone(),
-        ));
+        );
 
-        let swapchain_loader = Arc::new(ash::extensions::khr::Swapchain::new(
-            &entry.instance.read().unwrap(),
-            &logical_device.handle,
-        ));
+        let swapchain_loader =
+            ash::extensions::khr::Swapchain::new(&entry.instance, &logical_device.handle);
         let swapchain_support =
-            physical_device.get_swapchain_support(surface_loader.as_ref(), surface.handle);
+            physical_device.get_swapchain_support(&surface_loader, surface.handle);
         let swapchain = lv::Swapchain::new(
-            entry.clone(),
-            swapchain_loader.clone(),
-            physical_device.clone(),
+            swapchain_loader,
+            &physical_device,
             logical_device.clone(),
             surface.handle,
             lv::SwapchainPreferred {
@@ -96,9 +86,34 @@ impl VulkanApp {
             debug_messenger,
             physical_device,
             logical_device,
-            surface_loader,
             surface,
         }
+    }
+
+    fn create_graphics_pipeline(entry: &ash::Entry, device: Arc<lv::Device>) {
+        let vertex_shader = lv::Shader::new(
+            std::path::Path::new("./shaders/triangle.vert.spv"),
+            device.clone(),
+        );
+        let vert_shader_stage_info = vk::PipelineShaderStageCreateInfo {
+            s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage: vk::ShaderStageFlags::FRAGMENT,
+            module: vertex_shader.handle,
+            p_name: "main" as *const _ as *const c_char,
+            ..Default::default()
+        };
+        let fragment_shader = lv::Shader::new(
+            std::path::Path::new("./shaders/triangle.frag.spv"),
+            device.clone(),
+        );
+        let fragment_shader_stage_info = vk::PipelineShaderStageCreateInfo {
+            s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage: vk::ShaderStageFlags::FRAGMENT,
+            module: fragment_shader.handle,
+            p_name: "main" as *const _ as *const c_char,
+            ..Default::default()
+        };
+        let shader_stages = vec![vert_shader_stage_info, fragment_shader_stage_info];
     }
 
     fn check_validation_layer_support(entry: &ash::Entry) -> bool {
@@ -218,22 +233,15 @@ impl VulkanApp {
     }
 
     fn pick_physical_device(
-        instance: Arc<lv::lv>,
-        surface_loader: Arc<ash::extensions::khr::Surface>,
+        instance: Arc<lv::Instance>,
+        surface_loader: &ash::extensions::khr::Surface,
         surface: vk::SurfaceKHR,
-    ) -> Option<lv::PhysicalDevice> {
-        let physical_devices = unsafe {
-            instance
-                .instance
-                .read()
-                .unwrap()
-                .enumerate_physical_devices()
-                .unwrap()
-        };
+    ) -> Option<Arc<lv::PhysicalDevice>> {
+        let physical_devices = unsafe { instance.instance.enumerate_physical_devices().unwrap() };
         for physical_device in physical_devices {
             let mut lv_device = lv::PhysicalDevice::new(physical_device, instance.clone());
-            if VulkanApp::is_device_suitable(&mut lv_device, &surface_loader, surface) {
-                return Some(lv_device);
+            if VulkanApp::is_device_suitable(&mut lv_device, surface_loader, surface) {
+                return Some(Arc::new(lv_device));
             }
         }
         None

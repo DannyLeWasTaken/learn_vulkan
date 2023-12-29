@@ -1,18 +1,15 @@
 use crate::utility;
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone)]
-pub struct lv {
-    pub entry: Arc<RwLock<ash::Entry>>,
-    pub instance: Arc<RwLock<ash::Instance>>,
+pub struct Instance {
+    pub entry: ash::Entry,
+    pub instance: ash::Instance,
 }
 
-impl lv {
+impl Instance {
     pub fn check_validation_layer_support(&self, required_layers: Vec<&str>) -> bool {
         let layer_properties = self
             .entry
-            .read()
-            .unwrap()
             .enumerate_instance_layer_properties()
             .expect("Failed to enumerate instance layer properties");
 
@@ -40,10 +37,10 @@ impl lv {
     }
 }
 
-impl Drop for lv {
+impl Drop for Instance {
     fn drop(&mut self) {
         unsafe {
-            self.instance.read().unwrap().destroy_instance(None);
+            self.instance.destroy_instance(None);
         }
     }
 }

@@ -12,39 +12,35 @@ pub struct QueueFamilyIndices {
     pub present_family: Option<u32>,
 }
 
-#[derive(Clone)]
 pub struct PhysicalDevice {
     pub handle: vk::PhysicalDevice,
-    pub properties: Arc<vk::PhysicalDeviceProperties>,
-    pub features: Arc<vk::PhysicalDeviceFeatures>,
+    pub properties: vk::PhysicalDeviceProperties,
+    pub features: vk::PhysicalDeviceFeatures,
     pub queue_families: QueueFamilyIndices,
-    lv: Arc<lv::lv>,
+
+    // Reference-counting
+    instance: Arc<lv::Instance>,
 }
 
 impl PhysicalDevice {
-    pub fn new(vk_device: vk::PhysicalDevice, _ash: Arc<lv::lv>) -> PhysicalDevice {
-        let physical_device_properties = unsafe {
-            _ash.instance
-                .read()
-                .unwrap()
-                .get_physical_device_properties(vk_device)
-        };
-        let physical_device_features = unsafe {
-            _ash.instance
-                .read()
-                .unwrap()
-                .get_physical_device_features(vk_device)
-        };
+    pub fn new(vk_device: vk::PhysicalDevice, lv: Arc<lv::Instance>) -> PhysicalDevice {
+        let physical_device_properties =
+            unsafe { lv.instance.get_physical_device_properties(vk_device) };
+        let physical_device_features =
+            unsafe { lv.instance.get_physical_device_features(vk_device) };
+
+        // Get queue families
+        let queue_family_properties = unsafe {};
 
         PhysicalDevice {
             handle: vk_device,
-            properties: Arc::new(physical_device_properties),
-            features: Arc::new(physical_device_features),
+            instance: lv,
+            properties: physical_device_properties,
+            features: physical_device_features,
             queue_families: QueueFamilyIndices {
                 graphics_family: None,
                 present_family: None,
             },
-            lv: _ash,
         }
     }
 
@@ -54,10 +50,8 @@ impl PhysicalDevice {
         surface: vk::SurfaceKHR,
     ) {
         let queue_family_properties = unsafe {
-            self.lv
+            self.instance
                 .instance
-                .read()
-                .unwrap()
                 .get_physical_device_queue_family_properties(self.handle)
         };
         for (index, queue_family) in queue_family_properties.iter().enumerate() {
@@ -75,10 +69,8 @@ impl PhysicalDevice {
     }
     pub fn has_extensions(&self, extensions: Vec<String>) -> bool {
         let available_extensions = unsafe {
-            self.lv
+            self.instance
                 .instance
-                .read()
-                .unwrap()
                 .enumerate_device_extension_properties(self.handle)
                 .unwrap()
         };
@@ -128,17 +120,19 @@ impl PhysicalDevice {
 
 pub struct Device {
     pub handle: ash::Device,
-    pub physical_device: Arc<PhysicalDevice>,
     pub queues: Vec<lv::Queue>,
-    lv: Arc<lv::lv>,
+
+    // Reference-count
+    instance: Arc<lv::Instance>,
+    physical_Device: Arc<PhysicalDevice>,
 }
 
 impl Device {
     pub fn new(
         physical_device: Arc<PhysicalDevice>,
         required_extensions: Option<Vec<String>>,
-        lv: Arc<lv::lv>,
-    ) -> Device {
+        instance: Arc<lv::Instance>,
+    ) -> Arc<Device> {
         // Determine which queue family to use
         let queue_families: QueueFamilyIndices = physical_device.queue_families;
         // TODO: deal with multiple queues
@@ -177,25 +171,23 @@ impl Device {
             pp_enabled_extension_names: c_str_ptrs.as_ptr(),
             ..vk::DeviceCreateInfo::default()
         };
-
         let device = unsafe {
-            lv.instance
-                .read()
-                .unwrap()
+            instance
+                .instance
                 .create_device(physical_device.handle, &device_ci, None)
                 .unwrap()
         };
-
         let queues = vec![
             lv::Queue::new(queue_families.graphics_family.unwrap(), &device),
             lv::Queue::new(queue_families.present_family.unwrap(), &device),
         ];
-        Device {
+
+        Arc::new(Device {
             handle: device,
-            physical_device,
             queues,
-            lv,
-        }
+            instance: instance.clone(),
+            physical_Device: physical_device.clone(),
+        })
     }
 }
 

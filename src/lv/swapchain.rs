@@ -65,9 +65,10 @@ pub struct Swapchain {
     pub image_views: Vec<vk::ImageView>,
     pub extent: vk::Extent2D,
     pub surface_format: vk::SurfaceFormatKHR,
-    loader: Arc<ash::extensions::khr::Swapchain>,
+    loader: ash::extensions::khr::Swapchain,
+
+    // Reference-counting
     device: Arc<lv::Device>,
-    lv: Arc<lv::lv>,
 }
 
 pub struct SwapchainPreferred<'a> {
@@ -78,9 +79,8 @@ pub struct SwapchainPreferred<'a> {
 
 impl Swapchain {
     pub fn new(
-        lv: Arc<lv::lv>,
-        swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
-        physical_device: Arc<lv::PhysicalDevice>,
+        swapchain_loader: ash::extensions::khr::Swapchain,
+        physical_device: &lv::PhysicalDevice,
         device: Arc<lv::Device>,
         surface: vk::SurfaceKHR,
         preferred: SwapchainPreferred,
@@ -142,33 +142,15 @@ impl Swapchain {
                 .unwrap()
         };
 
-        // Retrieve swapchain images
+        // Retrieve swapchain images and views
         let images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
-
-        Swapchain {
-            handle: swapchain,
-            details: swapchain_support_details,
-            loader: swapchain_loader,
-            images,
-            image_views: Vec::new(),
-            surface_format,
-            device,
-            extent,
-            lv,
-        }
-    }
-}
-
-impl Swapchain {
-    pub fn image_views(&mut self) {
-        self.image_views
-            .resize(self.images.len(), vk::ImageView::null());
-        for (index, mut image_view) in self.image_views.iter_mut().enumerate() {
+        let mut image_views = Vec::<vk::ImageView>::with_capacity(images.len());
+        for (index, mut _image_view) in image_views.iter_mut().enumerate() {
             let image_view_ci = vk::ImageViewCreateInfo {
                 s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
-                image: self.images[index],
+                image: images[index],
                 view_type: vk::ImageViewType::TYPE_2D,
-                format: self.surface_format.format,
+                format: surface_format.format,
                 components: vk::ComponentMapping {
                     r: vk::ComponentSwizzle::IDENTITY,
                     g: vk::ComponentSwizzle::IDENTITY,
@@ -185,22 +167,33 @@ impl Swapchain {
                 ..vk::ImageViewCreateInfo::default()
             };
 
-            image_view = &mut unsafe {
-                self.device
+            _image_view = &mut unsafe {
+                device
                     .handle
                     .create_image_view(&image_view_ci, None)
                     .unwrap()
             };
         }
+
+        Swapchain {
+            handle: swapchain,
+            details: swapchain_support_details,
+            loader: swapchain_loader,
+            images,
+            image_views,
+            surface_format,
+            extent,
+            device,
+        }
     }
 }
+
+impl Swapchain {}
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
-            for image_view in self.image_views.iter() {
-                self.device.handle.destroy_image_view(*image_view, None);
-            }
+            self.image_views.clear();
             self.loader.destroy_swapchain(self.handle, None);
         };
     }

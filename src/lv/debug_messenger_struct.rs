@@ -32,6 +32,9 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 pub struct DebugMessenger {
     loader: ash::extensions::ext::DebugUtils,
     handle: vk::DebugUtilsMessengerEXT,
+
+    // Reference-counting
+    instance: Arc<lv::Instance>,
 }
 
 impl DebugMessenger {
@@ -51,17 +54,15 @@ impl DebugMessenger {
         }
     }
 
-    pub fn new(_ash: Arc<lv::lv>) -> DebugMessenger {
+    pub fn new(instance: Arc<lv::Instance>) -> Arc<DebugMessenger> {
         // Check if validation layers support
-        if !_ash.check_validation_layer_support(vec!["VK_LAYER_KHRONOS_validation"]) {
+        if !instance.check_validation_layer_support(vec!["VK_LAYER_KHRONOS_validation"]) {
             panic!("Validation layers were requested, but not found");
         }
 
         // Create debug messenger
-        let debug_utils_loader = ash::extensions::ext::DebugUtils::new(
-            &_ash.entry.read().unwrap(),
-            &_ash.instance.read().unwrap(),
-        );
+        let debug_utils_loader =
+            ash::extensions::ext::DebugUtils::new(&instance.entry, &instance.instance);
 
         let create_info = DebugMessenger::get_debug_create_info();
         let utils_messenger = unsafe {
@@ -70,10 +71,11 @@ impl DebugMessenger {
                 .expect("Debug utils could not be made")
         };
 
-        DebugMessenger {
+        Arc::new(DebugMessenger {
             loader: debug_utils_loader,
             handle: utils_messenger,
-        }
+            instance: instance.clone(),
+        })
     }
 }
 
