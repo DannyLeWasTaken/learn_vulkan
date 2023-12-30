@@ -14,8 +14,8 @@ pub struct QueueFamilyIndices {
 
 pub struct PhysicalDevice {
     pub handle: vk::PhysicalDevice,
-    pub properties: vk::PhysicalDeviceProperties,
-    pub features: vk::PhysicalDeviceFeatures,
+    pub properties: vk::PhysicalDeviceProperties2,
+    pub features: vk::PhysicalDeviceFeatures2,
     pub queue_families: QueueFamilyIndices,
 
     // Reference-counting
@@ -24,10 +24,16 @@ pub struct PhysicalDevice {
 
 impl PhysicalDevice {
     pub fn new(vk_device: vk::PhysicalDevice, lv: Arc<lv::Instance>) -> PhysicalDevice {
-        let physical_device_properties =
-            unsafe { lv.instance.get_physical_device_properties(vk_device) };
-        let physical_device_features =
-            unsafe { lv.instance.get_physical_device_features(vk_device) };
+        let mut physical_device_properties: vk::PhysicalDeviceProperties2 = Default::default();
+        unsafe {
+            lv.instance
+                .get_physical_device_properties2(vk_device, &mut physical_device_properties);
+        };
+        let mut physical_device_features: vk::PhysicalDeviceFeatures2 = Default::default();
+        unsafe {
+            lv.instance
+                .get_physical_device_features2(vk_device, &mut physical_device_features);
+        };
 
         // Get queue families
         let queue_family_properties = unsafe {};
@@ -67,7 +73,7 @@ impl PhysicalDevice {
             }
         }
     }
-    pub fn has_extensions(&self, extensions: Vec<String>) -> bool {
+    pub fn has_extensions(&self, extensions: &[String]) -> bool {
         let available_extensions = unsafe {
             self.instance
                 .instance
@@ -124,7 +130,7 @@ pub struct Device {
 
     // Reference-count
     instance: Arc<lv::Instance>,
-    physical_Device: Arc<PhysicalDevice>,
+    physical_device: Arc<PhysicalDevice>,
 }
 
 impl Device {
@@ -161,12 +167,19 @@ impl Device {
             .collect();
         let c_str_ptrs: Vec<*const c_char> = cstring_ext_names.iter().map(|s| s.as_ptr()).collect();
 
-        let physical_device_features = vk::PhysicalDeviceFeatures::default();
+        let physical_device_features = physical_device.features;
+        let dynamic_rendering_feature = vk::PhysicalDeviceDynamicRenderingFeatures {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+            dynamic_rendering: vk::TRUE,
+            ..Default::default()
+        };
+        // We also expect dynamic rendering at minimum
+
         let device_ci = vk::DeviceCreateInfo {
             s_type: vk::StructureType::DEVICE_CREATE_INFO,
             p_queue_create_infos: queue_cis.as_ptr(),
             queue_create_info_count: queue_cis.len() as u32,
-            p_enabled_features: &physical_device_features,
+            p_enabled_features: &physical_device_features.features,
             enabled_extension_count: c_str_ptrs.len() as u32,
             pp_enabled_extension_names: c_str_ptrs.as_ptr(),
             ..vk::DeviceCreateInfo::default()
@@ -186,7 +199,7 @@ impl Device {
             handle: device,
             queues,
             instance: instance.clone(),
-            physical_Device: physical_device.clone(),
+            physical_device: physical_device.clone(),
         })
     }
 }

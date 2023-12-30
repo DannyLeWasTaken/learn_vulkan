@@ -1,18 +1,20 @@
 mod debug_messenger_struct;
 mod device;
-mod lv_struct;
+mod instance;
+mod pipeline;
 mod queue;
+mod renderpass;
 mod shader;
 mod surface;
 mod swapchain;
-mod pipeline;
 
 // Re-export everything
-pub use self::lv_struct::*;
+pub use self::instance::*;
 pub use debug_messenger_struct::*;
 pub use device::*;
 pub use queue::*;
+pub use shader::*;
 pub use surface::*;
 pub use swapchain::*;
-pub use shader::*;
 pub use swapchain::*;
+pub use renderpass::*;

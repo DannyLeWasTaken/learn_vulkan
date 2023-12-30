@@ -14,6 +14,7 @@ pub struct PipelineBuilder {
     pub pipeline_layout: vk::PipelineLayoutCreateInfo,
     viewports: Vec<vk::Viewport>,
     scissors: Vec<vk::Rect2D>,
+    dynamic_states_vector: Vec<vk::DynamicState>,
 }
 
 impl PipelineBuilder {
@@ -35,6 +36,9 @@ impl PipelineBuilder {
             };
         PipelineBuilder {
             dynamic_states: vk::PipelineDynamicStateCreateInfo {
+                s_type: vk::StructureType::PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                dynamic_state_count: 0,
+                p_dynamic_states: ptr::null(),
                 ..Default::default()
             },
             vertex_input: vk::PipelineVertexInputStateCreateInfo {
@@ -101,6 +105,7 @@ impl PipelineBuilder {
             },
             viewports: Vec::new(),
             scissors: Vec::new(),
+            dynamic_states_vector: Vec::new(),
         }
     }
 
@@ -131,6 +136,13 @@ impl PipelineBuilder {
         self.scissors.clear();
         self.viewport_state.p_viewports = ptr::null();
         self.viewport_state.p_scissors = ptr::null();
+        self
+    }
+
+    pub fn dynamic_states(mut self, states: Vec<vk::DynamicState>) -> Self {
+        self.dynamic_states_vector = states;
+        self.dynamic_states.dynamic_state_count = self.dynamic_states_vector.len() as u32;
+        self.dynamic_states.p_dynamic_states = self.dynamic_states_vector.as_ptr();
         self
     }
 

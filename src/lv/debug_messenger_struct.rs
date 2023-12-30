@@ -56,7 +56,10 @@ impl DebugMessenger {
 
     pub fn new(instance: Arc<lv::Instance>) -> Arc<DebugMessenger> {
         // Check if validation layers support
-        if !instance.check_validation_layer_support(vec!["VK_LAYER_KHRONOS_validation"]) {
+        if !lv::Instance::check_validation_layer_support(
+            &instance.entry,
+            &["VK_LAYER_KHRONOS_validation".to_string()],
+        ) {
             panic!("Validation layers were requested, but not found");
         }
 
