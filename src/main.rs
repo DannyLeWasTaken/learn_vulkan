@@ -1,11 +1,9 @@
 use std::ffi::{c_char, CString};
-use std::mem::swap;
-use std::ops::Deref;
 
 use ash::{self, vk};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use std::ptr;
-use std::sync::{Arc, RwLock};
+use std::rc::Rc;
+use std::sync::Arc;
 use winit::{self};
 
 mod lv;
@@ -27,6 +25,9 @@ struct VulkanApp {
     surface: Arc<lv::Surface>,
     physical_device: Arc<lv::PhysicalDevice>,
     logical_device: Arc<lv::Device>,
+    pipeline: Rc<lv::Pipeline>,
+    command_pool: lv::CommandPool,
+    command_buffer: lv::CommandBuffer,
 }
 
 const VALIDATION: ValidationInfo = ValidationInfo {
@@ -109,11 +110,26 @@ impl VulkanApp {
             logical_device.clone(),
             surface.handle,
             lv::SwapchainPreferred {
-                swapchain_support_details: swapchain_support,
+                swapchain_support_details: swapchain_support.clone(),
                 preferred_format: &[vk::Format::R8G8B8_SRGB],
                 preferred_present_modes: &[vk::PresentModeKHR::MAILBOX],
             },
             window,
+        );
+        let pipeline =
+            VulkanApp::create_graphics_pipeline(logical_device.clone(), &swapchain_support);
+        let command_pool = lv::CommandPool::new(
+            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            logical_device
+                .queues
+                .get(&physical_device.queue_families.graphics_family.unwrap())
+                .unwrap(),
+            logical_device.clone(),
+        );
+        let command_buffer = lv::CommandBuffer::new(
+            &command_pool,
+            vk::CommandBufferLevel::PRIMARY,
+            &logical_device,
         );
 
         VulkanApp {
@@ -122,19 +138,40 @@ impl VulkanApp {
             physical_device,
             logical_device,
             surface,
+            pipeline,
+            command_pool,
+            command_buffer,
         }
     }
 
-    fn create_graphics_pipeline(entry: &ash::Entry, device: Arc<lv::Device>) {
+    fn record_commands(&self) {
+        let command_buffer = self.command_buffer.get_handle();
+        let rendering_info = vk::RenderingInfo {
+            s_type: vk::StructureType::RENDERING_INFO,
+            flags: vk::RenderingFlags::empty(),
+            layer_count: 0,
+            view_mask: 0,
+            color_attachment_count: 1,
+            ..Default::default()
+        };
+    }
+
+    fn create_attachments() {}
+
+    fn create_graphics_pipeline(
+        device: Arc<lv::Device>,
+        swapchain_support: &lv::SwapchainSupportDetails,
+    ) -> Rc<lv::Pipeline> {
         let vertex_shader = lv::Shader::new(
             std::path::Path::new("./shaders/triangle.vert.spv"),
             device.clone(),
         );
+        let shader_entry_point = CString::new("main").unwrap();
         let vert_shader_stage_info = vk::PipelineShaderStageCreateInfo {
             s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-            stage: vk::ShaderStageFlags::FRAGMENT,
+            stage: vk::ShaderStageFlags::VERTEX,
             module: vertex_shader.handle,
-            p_name: "main" as *const _ as *const c_char,
+            p_name: shader_entry_point.as_ptr(),
             ..Default::default()
         };
         let fragment_shader = lv::Shader::new(
@@ -145,10 +182,26 @@ impl VulkanApp {
             s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
             stage: vk::ShaderStageFlags::FRAGMENT,
             module: fragment_shader.handle,
-            p_name: "main" as *const _ as *const c_char,
+            p_name: shader_entry_point.as_ptr(),
             ..Default::default()
         };
         let shader_stages = vec![vert_shader_stage_info, fragment_shader_stage_info];
+        let pipeline = Rc::new(
+            lv::PipelineBuilder::new()
+                .set_viewport_counts(1, 1)
+                .dynamic_states(vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+                .attach_shaders_stages(shader_stages)
+                .color_attachments(
+                    1,
+                    swapchain_support
+                        .formats
+                        .iter()
+                        .map(|format| format.format)
+                        .collect(),
+                )
+                .build(device.clone()),
+        );
+        pipeline
     }
 
     fn init_window(event_loop: &winit::event_loop::EventLoop<()>) -> winit::window::Window {

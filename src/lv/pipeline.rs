@@ -1,5 +1,6 @@
 use crate::lv;
 use ash::vk;
+use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
 
@@ -12,9 +13,13 @@ pub struct PipelineBuilder {
     pub multisampling: vk::PipelineMultisampleStateCreateInfo,
     pub color_blending: vk::PipelineColorBlendStateCreateInfo,
     pub pipeline_layout: vk::PipelineLayoutCreateInfo,
+    pub pipeline_rendering: vk::PipelineRenderingCreateInfo,
     viewports: Vec<vk::Viewport>,
     scissors: Vec<vk::Rect2D>,
     dynamic_states_vector: Vec<vk::DynamicState>,
+
+    shader_stages: Vec<vk::PipelineShaderStageCreateInfo>,
+    color_formats: Vec<vk::Format>,
 }
 
 impl PipelineBuilder {
@@ -103,9 +108,16 @@ impl PipelineBuilder {
                 p_push_constant_ranges: ptr::null(),
                 ..Default::default()
             },
+            pipeline_rendering: vk::PipelineRenderingCreateInfo {
+                s_type: vk::StructureType::PIPELINE_RENDERING_CREATE_INFO,
+                ..Default::default()
+            },
             viewports: Vec::new(),
             scissors: Vec::new(),
             dynamic_states_vector: Vec::new(),
+
+            shader_stages: Vec::new(),
+            color_formats: Vec::new(),
         }
     }
 
@@ -146,14 +158,29 @@ impl PipelineBuilder {
         self
     }
 
+    pub fn color_attachments(mut self, count: u32, formats: Vec<vk::Format>) -> Self {
+        self.color_formats = formats;
+        self.pipeline_rendering.p_color_attachment_formats = self.color_formats.as_ptr();
+        self.pipeline_rendering.color_attachment_count = count;
+        self
+    }
+
+    pub fn attach_shaders_stages(
+        mut self,
+        mut stages: Vec<vk::PipelineShaderStageCreateInfo>,
+    ) -> Self {
+        self.shader_stages.append(&mut stages);
+        self
+    }
+
     pub fn build(self, device: Arc<lv::Device>) -> Pipeline {
         Pipeline::from_builder(self, device)
     }
 }
 
 pub struct Pipeline {
+    handle: vk::Pipeline,
     layout: vk::PipelineLayout,
-
     // Reference-counting
     device: Arc<lv::Device>,
 }
@@ -169,7 +196,43 @@ impl Pipeline {
                 .create_pipeline_layout(&builder.pipeline_layout, None)
                 .unwrap()
         };
-        Pipeline { layout, device }
+        let graphics_pipeline_ci = vk::GraphicsPipelineCreateInfo {
+            s_type: vk::StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
+            p_next: &builder.pipeline_rendering as *const _ as *const c_void,
+            stage_count: builder.shader_stages.len() as u32,
+            p_stages: builder.shader_stages.as_ptr(),
+            p_vertex_input_state: &builder.vertex_input,
+            p_input_assembly_state: &builder.input_assembly,
+            p_viewport_state: &builder.viewport_state,
+            p_rasterization_state: &builder.rasterizer,
+            p_multisample_state: &builder.multisampling,
+            p_depth_stencil_state: ptr::null(),
+            p_color_blend_state: &builder.color_blending,
+            p_dynamic_state: &builder.dynamic_states,
+            layout,
+            render_pass: vk::RenderPass::null(),
+            subpass: 0,
+            base_pipeline_handle: vk::Pipeline::null(),
+            base_pipeline_index: -1,
+            ..Default::default()
+        };
+        let handle = unsafe {
+            device
+                .handle
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[graphics_pipeline_ci], None)
+                .unwrap()
+                .pop()
+                .unwrap()
+        };
+        Pipeline {
+            handle,
+            layout,
+            device,
+        }
+    }
+
+    pub fn get_handle(&self) -> vk::Pipeline {
+        self.handle
     }
 
     pub fn attach_shader(shader: lv::Shader) {}
@@ -181,6 +244,7 @@ impl Drop for Pipeline {
             self.device
                 .handle
                 .destroy_pipeline_layout(self.layout, None);
+            self.device.handle.destroy_pipeline(self.handle, None);
         }
     }
 }
