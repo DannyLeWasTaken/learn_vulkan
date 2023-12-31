@@ -1,4 +1,5 @@
 use std::ffi::{c_char, CString};
+use std::ptr;
 
 use ash::{self, vk};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -162,13 +163,47 @@ impl VulkanApp {
         }
     }
 
-    fn record_commands(
-        device: &lv::Device,
-        command_buffer: &lv::CommandBuffer,
-        swapchain: &lv::Swapchain,
-        color_attachment: &vk::RenderingAttachmentInfo,
-    ) {
-        let command_buffer = command_buffer.get_handle();
+    fn record_commands(&self, index: usize) {
+        let command_buffer = self.command_buffer.get_handle();
+        let color_attachment = self.attachments.get(index).unwrap();
+        unsafe {
+            let command_buffer_bi = vk::CommandBufferBeginInfo {
+                s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+                flags: vk::CommandBufferUsageFlags::SIMULTANEOUS_USE,
+                ..Default::default()
+            };
+            self.logical_device
+                .handle
+                .begin_command_buffer(command_buffer, &command_buffer_bi)
+                .unwrap();
+        }
+        // Transition into writing
+        unsafe {
+            let image_barrier = vk::ImageMemoryBarrier {
+                s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
+                old_layout: vk::ImageLayout::UNDEFINED,
+                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                image: *self.swapchain.images.get(index).unwrap(),
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+            self.logical_device.handle.cmd_pipeline_barrier(
+                self.command_buffer.get_handle(),
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[image_barrier],
+            );
+        };
+
         let rendering_info = vk::RenderingInfo {
             s_type: vk::StructureType::RENDERING_INFO,
             flags: vk::RenderingFlags::empty(),
@@ -176,14 +211,14 @@ impl VulkanApp {
             view_mask: 0,
             color_attachment_count: 1,
             render_area: vk::Rect2D {
-                extent: swapchain.extent,
+                extent: self.swapchain.extent,
                 offset: vk::Offset2D::default(),
             },
             p_color_attachments: color_attachment,
             ..Default::default()
         };
         unsafe {
-            device
+            self.logical_device
                 .handle
                 .cmd_begin_rendering(command_buffer, &rendering_info);
         }
@@ -192,32 +227,67 @@ impl VulkanApp {
         let viewports = [vk::Viewport {
             x: 0.0f32,
             y: 0.0f32,
-            width: swapchain.extent.width as f32,
-            height: swapchain.extent.height as f32,
+            width: self.swapchain.extent.width as f32,
+            height: self.swapchain.extent.height as f32,
             min_depth: 0.0,
             max_depth: 0.0,
         }];
         unsafe {
-            device
+            self.logical_device
                 .handle
                 .cmd_set_viewport(command_buffer, 0, &viewports);
         }
 
         let scissors = [vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
-            extent: swapchain.extent,
+            extent: self.swapchain.extent,
         }];
         unsafe {
-            device.handle.cmd_set_scissor(command_buffer, 0, &scissors);
+            self.logical_device
+                .handle
+                .cmd_set_scissor(command_buffer, 0, &scissors);
         };
 
         // Draw
         unsafe {
-            device.handle.cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.logical_device
+                .handle
+                .cmd_draw(command_buffer, 3, 1, 0, 0);
         };
 
         unsafe {
-            device.handle.cmd_end_rendering(command_buffer);
+            self.logical_device.handle.cmd_end_rendering(command_buffer);
+
+            let image_barrier = vk::ImageMemoryBarrier {
+                s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                old_layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+                new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                image: *self.swapchain.images.get(index).unwrap(),
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+            self.logical_device.handle.cmd_pipeline_barrier(
+                self.command_buffer.get_handle(),
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[image_barrier],
+            );
+
+            self.logical_device
+                .handle
+                .end_command_buffer(command_buffer)
+                .unwrap();
         };
     }
 
@@ -373,6 +443,8 @@ impl VulkanApp {
                 .unwrap()
         };
         let index = index as usize;
+        let graphics_queue_index = self.physical_device.queue_families.graphics_family.unwrap();
+        let present_queue_index = self.physical_device.queue_families.present_family.unwrap();
         let signal_semaphore = [self.render_finished_semaphore.get_handle()];
 
         // reset command buffer to be recorded into
@@ -385,40 +457,7 @@ impl VulkanApp {
                 )
                 .unwrap()
         }
-        VulkanApp::record_commands(
-            &self.logical_device,
-            &self.command_buffer,
-            &self.swapchain,
-            self.attachments.get(0).unwrap(),
-        );
-
-        unsafe {
-            let image_barrier = vk::ImageMemoryBarrier {
-                s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
-                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                old_layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
-                new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                image: *self.swapchain.images.get(index).unwrap(),
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-            /*
-            self.logical_device.handle
-                .cmd_pipeline_barrier(self.command_buffer.get_handle(),
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                0,
-                0,
-                vk::DependencyFlags::empty(),
-                )
-             */
-        };
+        self.record_commands(index);
 
         // submitting the commands
         let submit_info = vk::SubmitInfo {

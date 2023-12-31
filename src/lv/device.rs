@@ -16,6 +16,7 @@ pub struct PhysicalDevice {
     pub handle: vk::PhysicalDevice,
     pub properties: vk::PhysicalDeviceProperties2,
     pub features: vk::PhysicalDeviceFeatures2,
+    pub features_1_3: vk::PhysicalDeviceVulkan13Features,
     pub queue_families: QueueFamilyIndices,
     pub swapchain_support: Option<lv::SwapchainSupportDetails>,
 
@@ -31,19 +32,19 @@ impl PhysicalDevice {
                 .get_physical_device_properties2(vk_device, &mut physical_device_properties);
         };
         let mut physical_device_features: vk::PhysicalDeviceFeatures2 = Default::default();
+        let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
+        physical_device_features.p_next = &mut features_1_3 as *mut _ as *mut c_void;
         unsafe {
             lv.instance
                 .get_physical_device_features2(vk_device, &mut physical_device_features);
         };
-
-        // Get queue families
-        let queue_family_properties = unsafe {};
 
         PhysicalDevice {
             handle: vk_device,
             instance: lv,
             properties: physical_device_properties,
             features: physical_device_features,
+            features_1_3,
             queue_families: QueueFamilyIndices {
                 graphics_family: None,
                 present_family: None,
