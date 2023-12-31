@@ -69,6 +69,7 @@ pub struct Swapchain {
 
     // Reference-counting
     device: Arc<lv::Device>,
+    surface: Arc<lv::Surface>,
 }
 
 pub struct SwapchainPreferred<'a> {
@@ -82,7 +83,7 @@ impl Swapchain {
         swapchain_loader: ash::extensions::khr::Swapchain,
         physical_device: &lv::PhysicalDevice,
         device: Arc<lv::Device>,
-        surface: vk::SurfaceKHR,
+        surface: Arc<lv::Surface>,
         preferred: SwapchainPreferred,
         window: &window::Window,
     ) -> Swapchain {
@@ -97,7 +98,7 @@ impl Swapchain {
         let family_queues = physical_device.queue_families;
         let swapchain_ci = vk::SwapchainCreateInfoKHR {
             s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
-            surface,
+            surface: surface.handle,
             min_image_count: image_count,
             image_format: surface_format.format,
             image_color_space: surface_format.color_space,
@@ -145,7 +146,7 @@ impl Swapchain {
         // Retrieve swapchain images and views
         let images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
         let mut image_views = Vec::<vk::ImageView>::with_capacity(images.len());
-        for (index, mut _image_view) in image_views.iter_mut().enumerate() {
+        for (index, _) in images.iter().enumerate() {
             let image_view_ci = vk::ImageViewCreateInfo {
                 s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
                 image: images[index],
@@ -167,12 +168,12 @@ impl Swapchain {
                 ..vk::ImageViewCreateInfo::default()
             };
 
-            _image_view = &mut unsafe {
+            image_views.push(unsafe {
                 device
                     .handle
                     .create_image_view(&image_view_ci, None)
                     .unwrap()
-            };
+            });
         }
 
         Swapchain {
@@ -184,7 +185,12 @@ impl Swapchain {
             surface_format,
             extent,
             device,
+            surface,
         }
+    }
+
+    pub fn get_loader(&self) -> &ash::extensions::khr::Swapchain {
+        &self.loader
     }
 }
 
@@ -193,7 +199,9 @@ impl Swapchain {}
 impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
-            self.image_views.clear();
+            for image in self.image_views.iter() {
+                self.device.handle.destroy_image_view(*image, None);
+            }
             self.loader.destroy_swapchain(self.handle, None);
         };
     }
