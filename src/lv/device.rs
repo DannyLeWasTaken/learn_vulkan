@@ -177,6 +177,13 @@ impl Device {
             dynamic_rendering: vk::TRUE,
             ..Default::default()
         };
+        // Same with sync2
+        let mut sync_2 = vk::PhysicalDeviceSynchronization2Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+            synchronization2: vk::TRUE,
+            ..Default::default()
+        };
+        dynamic_rendering_feature.p_next = &mut sync_2 as *mut _ as *mut c_void;
         physical_device_features.p_next = &mut dynamic_rendering_feature as *mut _ as *mut c_void;
 
         let device_ci = vk::DeviceCreateInfo {

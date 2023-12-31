@@ -1,6 +1,7 @@
 use crate::lv;
 use ash::vk;
 use std::ptr;
+use std::str::from_boxed_utf8_unchecked;
 use std::sync::Arc;
 use winit::window;
 
@@ -96,6 +97,15 @@ impl Swapchain {
             .min(swapchain_support_details.capabilities.max_image_count);
 
         let family_queues = physical_device.queue_families;
+        let queue_indices =
+            if family_queues.graphics_family.unwrap() != family_queues.present_family.unwrap() {
+                vec![
+                    family_queues.graphics_family.unwrap(),
+                    family_queues.present_family.unwrap(),
+                ]
+            } else {
+                vec![family_queues.graphics_family.unwrap()]
+            };
         let swapchain_ci = vk::SwapchainCreateInfoKHR {
             s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
             surface: surface.handle,
@@ -105,31 +115,9 @@ impl Swapchain {
             image_extent: extent,
             image_array_layers: 1,
             image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            image_sharing_mode: if family_queues.graphics_family.unwrap()
-                != family_queues.present_family.unwrap()
-            {
-                vk::SharingMode::CONCURRENT
-            } else {
-                vk::SharingMode::EXCLUSIVE
-            },
-            queue_family_index_count: if family_queues.graphics_family.unwrap()
-                != family_queues.present_family.unwrap()
-            {
-                2
-            } else {
-                0
-            },
-            p_queue_family_indices: if family_queues.graphics_family.unwrap()
-                != family_queues.present_family.unwrap()
-            {
-                vec![
-                    family_queues.graphics_family.unwrap(),
-                    family_queues.present_family.unwrap(),
-                ]
-                .as_ptr()
-            } else {
-                ptr::null()
-            },
+            image_sharing_mode: vk::SharingMode::CONCURRENT,
+            queue_family_index_count: queue_indices.len() as u32,
+            p_queue_family_indices: queue_indices.as_ptr(),
             pre_transform: swapchain_support_details.capabilities.current_transform,
             composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
             present_mode,

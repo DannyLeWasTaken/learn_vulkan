@@ -29,7 +29,6 @@ struct VulkanApp {
     logical_device: Arc<lv::Device>,
     swapchain: lv::Swapchain,
     pipeline: Rc<lv::Pipeline>,
-    attachments: Vec<vk::RenderingAttachmentInfo>,
     command_pool: lv::CommandPool,
     command_buffer: lv::CommandBuffer,
 
@@ -69,6 +68,9 @@ impl VulkanApp {
                 .to_string_lossy()
                 .into_owned(),
             ash::extensions::khr::DynamicRendering::name()
+                .to_string_lossy()
+                .into_owned(),
+            ash::extensions::khr::Synchronization2::name()
                 .to_string_lossy()
                 .into_owned(),
             // BDAs
@@ -127,7 +129,6 @@ impl VulkanApp {
         );
         let pipeline =
             VulkanApp::create_graphics_pipeline(logical_device.clone(), &swapchain_support);
-        let attachments = VulkanApp::create_attachments(&swapchain);
         let command_pool = lv::CommandPool::new(
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
             logical_device
@@ -156,7 +157,6 @@ impl VulkanApp {
             pipeline,
             command_pool,
             command_buffer,
-            attachments,
             image_available_semaphore,
             render_finished_semaphore,
             in_flight_fence,
@@ -164,8 +164,15 @@ impl VulkanApp {
     }
 
     fn record_commands(&self, index: usize) {
+        let present_queue_index = self.physical_device.queue_families.present_family.unwrap();
+        let graphics_queue_index = self.physical_device.queue_families.graphics_family.unwrap();
+
         let command_buffer = self.command_buffer.get_handle();
-        let color_attachment = self.attachments.get(index).unwrap();
+        let color_attachment = utility::init::attachment_info(
+            *self.swapchain.image_views.get(index).unwrap(),
+            Some(vk::ClearValue::default()),
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
         unsafe {
             let command_buffer_bi = vk::CommandBufferBeginInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
@@ -178,31 +185,15 @@ impl VulkanApp {
                 .unwrap();
         }
         // Transition into writing
-        unsafe {
-            let image_barrier = vk::ImageMemoryBarrier {
-                s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                image: *self.swapchain.images.get(index).unwrap(),
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-            self.logical_device.handle.cmd_pipeline_barrier(
-                self.command_buffer.get_handle(),
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[image_barrier],
-            );
-        };
+        utility::transition_image(
+            &self.logical_device.handle,
+            command_buffer,
+            *self.swapchain.images.get(index).unwrap(),
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        );
 
         let rendering_info = vk::RenderingInfo {
             s_type: vk::StructureType::RENDERING_INFO,
@@ -214,13 +205,18 @@ impl VulkanApp {
                 extent: self.swapchain.extent,
                 offset: vk::Offset2D::default(),
             },
-            p_color_attachments: color_attachment,
+            p_color_attachments: &color_attachment,
             ..Default::default()
         };
         unsafe {
             self.logical_device
                 .handle
                 .cmd_begin_rendering(command_buffer, &rendering_info);
+            self.logical_device.handle.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.get_handle(),
+            );
         }
 
         // Recall we have set viewport + scissor as dynamic and not fixed
@@ -258,30 +254,14 @@ impl VulkanApp {
         unsafe {
             self.logical_device.handle.cmd_end_rendering(command_buffer);
 
-            let image_barrier = vk::ImageMemoryBarrier {
-                s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
-                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
-                old_layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
-                new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                image: *self.swapchain.images.get(index).unwrap(),
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-            self.logical_device.handle.cmd_pipeline_barrier(
-                self.command_buffer.get_handle(),
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[image_barrier],
+            utility::transition_image(
+                &self.logical_device.handle,
+                command_buffer,
+                *self.swapchain.images.get(index).unwrap(),
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+                vk::QUEUE_FAMILY_IGNORED,
+                vk::QUEUE_FAMILY_IGNORED,
             );
 
             self.logical_device
@@ -290,26 +270,6 @@ impl VulkanApp {
                 .unwrap();
         };
     }
-
-    fn create_attachments(swapchain: &lv::Swapchain) -> Vec<vk::RenderingAttachmentInfo> {
-        let mut attachments = Vec::new();
-        println!("Size: {:?}", swapchain.image_views.len());
-        for (index, image) in swapchain.image_views.iter().enumerate() {
-            let color_attachment = vk::RenderingAttachmentInfo {
-                s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
-                image_view: *image,
-                image_layout: vk::ImageLayout::UNDEFINED,
-                resolve_mode: vk::ResolveModeFlags::NONE,
-                load_op: vk::AttachmentLoadOp::CLEAR,
-                store_op: vk::AttachmentStoreOp::STORE,
-                clear_value: vk::ClearValue::default(),
-                ..Default::default()
-            };
-            attachments.push(color_attachment);
-        }
-        attachments
-    }
-
     fn create_graphics_pipeline(
         device: Arc<lv::Device>,
         swapchain_support: &lv::SwapchainSupportDetails,
@@ -424,10 +384,11 @@ impl VulkanApp {
     }
 
     fn draw_frame(&mut self) {
+        let wait_fences = [self.in_flight_fence.get_handle()];
         unsafe {
             self.logical_device
                 .handle
-                .wait_for_fences(&[self.in_flight_fence.get_handle()], true, u64::MAX)
+                .wait_for_fences(&wait_fences, true, u64::MAX)
                 .unwrap();
         };
 
@@ -443,8 +404,7 @@ impl VulkanApp {
                 .unwrap()
         };
         let index = index as usize;
-        let graphics_queue_index = self.physical_device.queue_families.graphics_family.unwrap();
-        let present_queue_index = self.physical_device.queue_families.present_family.unwrap();
+        let wait_semaphores = [self.image_available_semaphore.get_handle()];
         let signal_semaphore = [self.render_finished_semaphore.get_handle()];
 
         // reset command buffer to be recorded into
@@ -462,8 +422,8 @@ impl VulkanApp {
         // submitting the commands
         let submit_info = vk::SubmitInfo {
             s_type: vk::StructureType::SUBMIT_INFO,
-            wait_semaphore_count: 1,
-            p_wait_semaphores: [self.image_available_semaphore.get_handle()].as_ptr(), // wait for this semaphore before
+            wait_semaphore_count: wait_semaphores.len() as u32,
+            p_wait_semaphores: wait_semaphores.as_ptr(), // wait for this semaphore before
             // executing
             p_wait_dst_stage_mask: [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT].as_ptr(), // wait stage to wait
             // at. i.e. continue up until color attachment and wait for the semaphore to be signaled
@@ -471,14 +431,14 @@ impl VulkanApp {
             p_command_buffers: [self.command_buffer.get_handle()].as_ptr(),
 
             // Indicate which semaphore is to be signaled after the queue is finished
-            signal_semaphore_count: 1,
-            p_signal_semaphores: [self.render_finished_semaphore.get_handle()].as_ptr(),
+            signal_semaphore_count: signal_semaphore.len() as u32,
+            p_signal_semaphores: signal_semaphore.as_ptr(),
             ..Default::default()
         };
         unsafe {
             self.logical_device
                 .handle
-                .reset_fences(&[self.in_flight_fence.get_handle()])
+                .reset_fences(&wait_fences)
                 .unwrap();
 
             self.logical_device

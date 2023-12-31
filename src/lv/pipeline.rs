@@ -32,12 +32,11 @@ impl PipelineBuilder {
                     | vk::ColorComponentFlags::A,
                 blend_enable: vk::FALSE,
                 src_color_blend_factor: vk::BlendFactor::ONE,
-                dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                dst_color_blend_factor: vk::BlendFactor::ZERO,
                 color_blend_op: vk::BlendOp::ADD,
                 src_alpha_blend_factor: vk::BlendFactor::ONE,
                 dst_alpha_blend_factor: vk::BlendFactor::ZERO,
                 alpha_blend_op: vk::BlendOp::ADD,
-                ..Default::default()
             };
         PipelineBuilder {
             dynamic_states: vk::PipelineDynamicStateCreateInfo {
@@ -70,6 +69,7 @@ impl PipelineBuilder {
             },
             rasterizer: vk::PipelineRasterizationStateCreateInfo {
                 s_type: vk::StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                depth_clamp_enable: vk::FALSE,
                 rasterizer_discard_enable: vk::FALSE,
                 polygon_mode: vk::PolygonMode::FILL,
                 line_width: 1.0f32,
