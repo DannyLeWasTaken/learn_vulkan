@@ -164,9 +164,6 @@ impl VulkanApp {
     }
 
     fn record_commands(&self, index: usize) {
-        let present_queue_index = self.physical_device.queue_families.present_family.unwrap();
-        let graphics_queue_index = self.physical_device.queue_families.graphics_family.unwrap();
-
         let command_buffer = self.command_buffer.get_handle();
         let color_attachment = utility::init::attachment_info(
             *self.swapchain.image_views.get(index).unwrap(),
