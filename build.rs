@@ -119,6 +119,7 @@ fn main() {
                     "rgen" => shaderc::ShaderKind::RayGeneration,
                     "rchit" => shaderc::ShaderKind::ClosestHit,
                     "rmiss" => shaderc::ShaderKind::Miss,
+                    "comp" => shaderc::ShaderKind::Compute,
                     _ => panic!("Unsupported shader kind: {:?}", path.file_name().unwrap()),
                 };
                 let output = path.with_file_name(format!(
