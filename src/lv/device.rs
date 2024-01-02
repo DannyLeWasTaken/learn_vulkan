@@ -3,7 +3,6 @@ use crate::utility::tools::vk_to_string;
 use ash::vk;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CString};
-use std::iter::Map;
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
@@ -17,6 +16,8 @@ pub struct PhysicalDevice {
     pub properties: vk::PhysicalDeviceProperties2,
     pub features: vk::PhysicalDeviceFeatures2,
     pub features_1_3: vk::PhysicalDeviceVulkan13Features,
+    pub features_1_2: vk::PhysicalDeviceVulkan12Features,
+    pub features_1_1: vk::PhysicalDeviceVulkan11Features,
     pub queue_families: QueueFamilyIndices,
     pub swapchain_support: Option<lv::SwapchainSupportDetails>,
 
@@ -33,7 +34,11 @@ impl PhysicalDevice {
         };
         let mut physical_device_features: vk::PhysicalDeviceFeatures2 = Default::default();
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
+        let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
+        let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
         physical_device_features.p_next = &mut features_1_3 as *mut _ as *mut c_void;
+        features_1_3.p_next = &mut features_1_2 as *mut _ as *mut c_void;
+        features_1_2.p_next = &mut features_1_1 as *mut _ as *mut c_void;
         unsafe {
             lv.instance
                 .get_physical_device_features2(vk_device, &mut physical_device_features);
@@ -45,6 +50,8 @@ impl PhysicalDevice {
             properties: physical_device_properties,
             features: physical_device_features,
             features_1_3,
+            features_1_2,
+            features_1_1,
             queue_families: QueueFamilyIndices {
                 graphics_family: None,
                 present_family: None,
@@ -183,8 +190,15 @@ impl Device {
             synchronization2: vk::TRUE,
             ..Default::default()
         };
+        let mut bda = vk::PhysicalDeviceBufferDeviceAddressFeatures {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+            buffer_device_address: vk::TRUE,
+            buffer_device_address_capture_replay: vk::TRUE,
+            ..Default::default()
+        };
         dynamic_rendering_feature.p_next = &mut sync_2 as *mut _ as *mut c_void;
         physical_device_features.p_next = &mut dynamic_rendering_feature as *mut _ as *mut c_void;
+        sync_2.p_next = &mut bda as *mut _ as *mut c_void;
 
         let device_ci = vk::DeviceCreateInfo {
             s_type: vk::StructureType::DEVICE_CREATE_INFO,

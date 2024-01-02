@@ -1,12 +1,14 @@
-use std::ffi::{c_char, CString};
-use std::ptr;
+use std::cell::RefCell;
+use std::ffi::CString;
 
+use crate::frame::FrameData;
 use ash::{self, vk};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use winit::{self};
 
+mod frame;
 mod lv;
 mod utility;
 
@@ -14,7 +16,7 @@ mod utility;
 const WINDOW_TITLE: &str = "Hello, Vulkan!";
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
-const MAX_FRAIMES_IN_FLIGHT: u32 = 2;
+const FRAME_OVERLAP: u32 = 2;
 
 struct ValidationInfo {
     pub is_enabled: bool,
@@ -27,15 +29,15 @@ struct VulkanApp {
     surface: Arc<lv::Surface>,
     physical_device: Arc<lv::PhysicalDevice>,
     logical_device: Arc<lv::Device>,
+    allocator: Arc<Mutex<gpu_allocator::vulkan::Allocator>>,
     swapchain: lv::Swapchain,
     pipeline: Rc<lv::Pipeline>,
-    command_pool: lv::CommandPool,
-    command_buffer: lv::CommandBuffer,
 
-    // Synchronization primitives (i don't like this but lol)
-    image_available_semaphore: lv::Semaphore,
-    render_finished_semaphore: lv::Semaphore,
-    in_flight_fence: lv::Fence,
+    draw_extent: vk::Extent2D,
+    draw_image: lv::AllocatedImage,
+    frames: Vec<FrameData>,
+
+    frame_count: u64,
 }
 
 const VALIDATION: ValidationInfo = ValidationInfo {
@@ -115,6 +117,18 @@ impl VulkanApp {
             ash::extensions::khr::Swapchain::new(&instance.instance, &logical_device.handle);
         let swapchain_support =
             physical_device.get_swapchain_support(&surface_loader, surface.handle);
+        let allocator = Arc::new(Mutex::new(
+            gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
+                instance: instance.instance.clone(),
+                device: logical_device.handle.clone(),
+                physical_device: physical_device.handle,
+                debug_settings: Default::default(),
+                buffer_device_address: true,
+                allocation_sizes: Default::default(),
+            })
+            .unwrap(),
+        ));
+
         let swapchain = lv::Swapchain::new(
             swapchain_loader,
             &physical_device,
@@ -127,44 +141,241 @@ impl VulkanApp {
             },
             window,
         );
+        // create image that is rendered to
+        let draw_extent = swapchain.extent;
+        let draw_image_extent = vk::Extent3D {
+            height: swapchain.extent.height,
+            width: swapchain.extent.width,
+            depth: 1,
+        };
+        let draw_image = lv::AllocatedImage::new(
+            utility::init::image_create_info(
+                vk::Format::R16G16B16A16_SFLOAT,
+                vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                draw_image_extent,
+            ),
+            vk::ImageAspectFlags::COLOR,
+            logical_device.clone(),
+            allocator.clone(),
+        );
+
         let pipeline =
             VulkanApp::create_graphics_pipeline(logical_device.clone(), &swapchain_support);
-        let command_pool = lv::CommandPool::new(
-            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            logical_device
-                .queues
-                .get(&physical_device.queue_families.graphics_family.unwrap())
-                .unwrap(),
-            logical_device.clone(),
-        );
-        let command_buffer = lv::CommandBuffer::new(
-            &command_pool,
-            vk::CommandBufferLevel::PRIMARY,
-            &logical_device,
-        );
-        let image_available_semaphore = lv::Semaphore::new(logical_device.clone());
-        let render_finished_semaphore = lv::Semaphore::new(logical_device.clone());
-        let in_flight_fence =
-            lv::Fence::new(logical_device.clone(), Some(vk::FenceCreateFlags::SIGNALED));
+        let mut frames: Vec<FrameData> = Vec::with_capacity(FRAME_OVERLAP as usize);
+        for _ in 0..FRAME_OVERLAP {
+            let pool = lv::CommandPool::new(
+                vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                logical_device
+                    .queues
+                    .get(&physical_device.queue_families.graphics_family.unwrap())
+                    .unwrap(),
+                logical_device.clone(),
+            );
+            let main_command_buffer =
+                lv::CommandBuffer::new(&pool, vk::CommandBufferLevel::PRIMARY, &logical_device);
+            let render_semaphore = lv::Semaphore::new(logical_device.clone(), None);
+            let swapchain_semaphore = lv::Semaphore::new(logical_device.clone(), None);
+            let render_fence =
+                lv::Fence::new(logical_device.clone(), Some(vk::FenceCreateFlags::SIGNALED));
+
+            frames.push(FrameData {
+                pool,
+                main_command_buffer,
+                render_semaphore,
+                render_fence,
+                swapchain_semaphore,
+            })
+        }
 
         VulkanApp {
             handle: instance,
             debug_messenger,
             physical_device,
             logical_device,
+            allocator,
             surface,
             swapchain,
             pipeline,
-            command_pool,
-            command_buffer,
-            image_available_semaphore,
-            render_finished_semaphore,
-            in_flight_fence,
+            frames,
+            draw_image,
+            draw_extent,
+            frame_count: 0,
         }
     }
 
-    fn record_commands(&self, index: usize) {
-        let command_buffer = self.command_buffer.get_handle();
+    fn get_current_frame(&self) -> &FrameData {
+        self.frames
+            .get((self.frame_count % self.frames.len() as u64) as usize)
+            .unwrap()
+    }
+
+    fn draw_background(&self) {
+        let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
+        let flash = (self.frame_count as f64).sin().abs();
+        let clear_value: vk::ClearColorValue = vk::ClearColorValue {
+            float32: [0.0f32, 0.0f32, flash as f32, 0.0f32],
+        };
+
+        let clear_range = utility::init::image_subresource_range(vk::ImageAspectFlags::COLOR);
+        unsafe {
+            self.logical_device.handle.cmd_clear_color_image(
+                command_buffer,
+                self.draw_image.get_handle(),
+                vk::ImageLayout::GENERAL,
+                &clear_value,
+                &[clear_range],
+            )
+        }
+    }
+
+    fn record_commands(&mut self, index: usize) {
+        let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
+        self.draw_extent = self.swapchain.extent;
+
+        unsafe {
+            self.logical_device
+                .handle
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .unwrap()
+        }
+
+        let color_attachment = utility::init::attachment_info(
+            *self.swapchain.image_views.get(index).unwrap(),
+            Some(vk::ClearValue::default()),
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
+        unsafe {
+            let command_buffer_bi = vk::CommandBufferBeginInfo {
+                s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+                flags: vk::CommandBufferUsageFlags::SIMULTANEOUS_USE,
+                ..Default::default()
+            };
+            self.logical_device
+                .handle
+                .begin_command_buffer(command_buffer, &command_buffer_bi)
+                .unwrap();
+        }
+
+        /*
+        let rendering_info = vk::RenderingInfo {
+            s_type: vk::StructureType::RENDERING_INFO,
+            flags: vk::RenderingFlags::empty(),
+            layer_count: 1,
+            view_mask: 0,
+            color_attachment_count: 1,
+            render_area: vk::Rect2D {
+                extent: self.swapchain.extent,
+                offset: vk::Offset2D::default(),
+            },
+            p_color_attachments: &color_attachment,
+            ..Default::default()
+        };
+        unsafe {
+            self.logical_device
+                .handle
+                .cmd_begin_rendering(command_buffer, &rendering_info);
+        }
+         */
+
+        // Recall we have set viewport + scissor as dynamic and not fixed
+        let viewports = [vk::Viewport {
+            x: 0.0f32,
+            y: 0.0f32,
+            width: self.swapchain.extent.width as f32,
+            height: self.swapchain.extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 0.0,
+        }];
+        unsafe {
+            self.logical_device
+                .handle
+                .cmd_set_viewport(command_buffer, 0, &viewports);
+        }
+
+        let scissors = [vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: self.swapchain.extent,
+        }];
+        unsafe {
+            self.logical_device
+                .handle
+                .cmd_set_scissor(command_buffer, 0, &scissors);
+        };
+
+        // transition image from swapchain to be rendered into
+        utility::transition_image(
+            &self.logical_device.handle,
+            command_buffer,
+            self.draw_image.get_handle(),
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        );
+        self.draw_background();
+
+        // transition image into their connect transfer layout
+        utility::transition_image(
+            &self.logical_device.handle,
+            command_buffer,
+            self.draw_image.get_handle(),
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        );
+        utility::transition_image(
+            &self.logical_device.handle,
+            command_buffer,
+            *self.swapchain.images.get(index).unwrap(),
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        );
+
+        // execute a copy from drawn image to present image
+        utility::copy_image_to_image(
+            command_buffer,
+            &self.logical_device,
+            self.draw_image.get_handle(),
+            *self.swapchain.images.get(index).unwrap(),
+            self.draw_extent,
+            self.swapchain.extent,
+        );
+
+        // set swapchain image layout to Present so we can show it on the screen
+        utility::transition_image(
+            &self.logical_device.handle,
+            command_buffer,
+            *self.swapchain.images.get(index).unwrap(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        );
+
+        unsafe {
+            //self.logical_device.handle.cmd_end_rendering(command_buffer);
+
+            self.logical_device
+                .handle
+                .end_command_buffer(command_buffer)
+                .unwrap()
+        }
+
+        /*
+        // reset current buffer
+        unsafe {
+            self.logical_device
+                .handle
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .unwrap()
+        }
+
         let color_attachment = utility::init::attachment_info(
             *self.swapchain.image_views.get(index).unwrap(),
             Some(vk::ClearValue::default()),
@@ -266,6 +477,7 @@ impl VulkanApp {
                 .end_command_buffer(command_buffer)
                 .unwrap();
         };
+        */
     }
     fn create_graphics_pipeline(
         device: Arc<lv::Device>,
@@ -328,6 +540,9 @@ impl VulkanApp {
         required_extensions: &[String],
     ) -> bool {
         if physical_device.properties.properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+            && physical_device.features_1_3.synchronization2 == vk::TRUE
+            && physical_device.features_1_3.dynamic_rendering == vk::TRUE
+            && physical_device.features_1_2.buffer_device_address == vk::TRUE
             && physical_device.features.features.geometry_shader == vk::TRUE
             && physical_device.has_extensions(required_extensions)
         {
@@ -381,11 +596,11 @@ impl VulkanApp {
     }
 
     fn draw_frame(&mut self) {
-        let wait_fences = [self.in_flight_fence.get_handle()];
+        let render_fences = [self.get_current_frame().render_fence.get_handle()];
         unsafe {
             self.logical_device
                 .handle
-                .wait_for_fences(&wait_fences, true, u64::MAX)
+                .wait_for_fences(&render_fences, true, u64::MAX)
                 .unwrap();
         };
 
@@ -395,21 +610,21 @@ impl VulkanApp {
                 .acquire_next_image(
                     self.swapchain.handle,
                     u64::MAX,
-                    self.image_available_semaphore.get_handle(),
+                    self.get_current_frame().swapchain_semaphore.get_handle(),
                     vk::Fence::null(),
                 )
                 .unwrap()
         };
         let index = index as usize;
-        let wait_semaphores = [self.image_available_semaphore.get_handle()];
-        let signal_semaphore = [self.render_finished_semaphore.get_handle()];
+        let wait_semaphores = [self.get_current_frame().swapchain_semaphore.get_handle()];
+        let signal_semaphore = [self.get_current_frame().render_semaphore.get_handle()];
 
         // reset command buffer to be recorded into
         unsafe {
             self.logical_device
                 .handle
                 .reset_command_buffer(
-                    self.command_buffer.get_handle(),
+                    self.get_current_frame().main_command_buffer.get_handle(),
                     vk::CommandBufferResetFlags::empty(),
                 )
                 .unwrap()
@@ -425,7 +640,7 @@ impl VulkanApp {
             p_wait_dst_stage_mask: [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT].as_ptr(), // wait stage to wait
             // at. i.e. continue up until color attachment and wait for the semaphore to be signaled
             command_buffer_count: 1,
-            p_command_buffers: [self.command_buffer.get_handle()].as_ptr(),
+            p_command_buffers: [self.get_current_frame().main_command_buffer.get_handle()].as_ptr(),
 
             // Indicate which semaphore is to be signaled after the queue is finished
             signal_semaphore_count: signal_semaphore.len() as u32,
@@ -435,7 +650,7 @@ impl VulkanApp {
         unsafe {
             self.logical_device
                 .handle
-                .reset_fences(&wait_fences)
+                .reset_fences(&render_fences)
                 .unwrap();
 
             self.logical_device
@@ -447,9 +662,9 @@ impl VulkanApp {
                         .unwrap()
                         .handle,
                     &[submit_info],
-                    self.in_flight_fence.get_handle(),
+                    *render_fences.get(0).unwrap(),
                 )
-                .unwrap()
+                .unwrap();
         };
 
         let swapchains = [self.swapchain.handle];
@@ -476,6 +691,7 @@ impl VulkanApp {
                 )
                 .unwrap();
         }
+        self.frame_count += 1;
     }
 
     pub fn main_loop(

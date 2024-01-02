@@ -8,10 +8,10 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    pub fn new(device: Arc<lv::Device>) -> Self {
+    pub fn new(device: Arc<lv::Device>, flags: Option<vk::SemaphoreCreateFlags>) -> Self {
         let semaphore_ci = vk::SemaphoreCreateInfo {
             s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
-            flags: Default::default(),
+            flags: flags.unwrap_or_default(),
             ..Default::default()
         };
         let handle = unsafe { device.handle.create_semaphore(&semaphore_ci, None).unwrap() };
@@ -25,9 +25,9 @@ impl Semaphore {
 }
 
 impl Drop for Semaphore {
-	fn drop(&mut self) {
-		unsafe {
-			self.device.handle.destroy_semaphore(self.handle, None);
-		};
-	}
+    fn drop(&mut self) {
+        unsafe {
+            self.device.handle.destroy_semaphore(self.handle, None);
+        };
+    }
 }

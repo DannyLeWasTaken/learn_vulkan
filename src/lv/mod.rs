@@ -1,3 +1,4 @@
+pub mod Image;
 mod command_buffer;
 mod command_pool;
 mod debug_messenger_struct;
@@ -24,3 +25,4 @@ pub use semaphore::*;
 pub use shader::*;
 pub use surface::*;
 pub use swapchain::*;
+pub use Image::*;

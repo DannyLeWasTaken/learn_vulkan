@@ -114,7 +114,10 @@ impl Swapchain {
             image_color_space: surface_format.color_space,
             image_extent: extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode: vk::SharingMode::CONCURRENT,
             queue_family_index_count: queue_indices.len() as u32,
             p_queue_family_indices: queue_indices.as_ptr(),

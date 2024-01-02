@@ -16,6 +16,10 @@ shaderc = { version = "0.8.2", optional = true, features = ["build-from-source"]
 [features]
 default = ["shaderc"]
 
+[dependencies.gpu-allocator]
+version = "0.24.0"
+features = ["vulkan", "ash"]
+
 [dependencies.ash]
 version = "0.37.3+1.3.251"
 features = ["linked"]
