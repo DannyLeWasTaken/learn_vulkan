@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::ffi::CString;
 
 use crate::frame::FrameData;
+use crate::lv::traits::Resource;
+use ash::vk::TaggedStructure;
 use ash::{self, vk};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::rc::Rc;
@@ -11,6 +13,7 @@ use winit::{self};
 mod frame;
 mod lv;
 mod utility;
+mod vk_descriptors;
 
 // Constants
 const WINDOW_TITLE: &str = "Hello, Vulkan!";
@@ -34,10 +37,13 @@ struct VulkanApp {
     pipeline: Rc<lv::Pipeline>,
 
     draw_extent: vk::Extent2D,
-    draw_image: lv::AllocatedImage,
+    draw_image_index: u32,
     frames: Vec<FrameData>,
-
     frame_count: u64,
+
+    gpu_resource_table: lv::descriptors::GPUResourceTable,
+
+    gradient_pipeline: Rc<lv::ComputePipeline>,
 }
 
 const VALIDATION: ValidationInfo = ValidationInfo {
@@ -189,6 +195,13 @@ impl VulkanApp {
                 swapchain_semaphore,
             })
         }
+        let (gpu_resource_table, draw_image_index) =
+            VulkanApp::init_descriptors(logical_device.clone(), draw_image);
+        let gradient_pipeline = VulkanApp::init_background_pipelines(
+            logical_device.clone(),
+            gpu_resource_table.get_layout().clone(),
+        );
+        let gradient_pipeline = Rc::new(gradient_pipeline);
 
         VulkanApp {
             handle: instance,
@@ -200,10 +213,52 @@ impl VulkanApp {
             swapchain,
             pipeline,
             frames,
-            draw_image,
+            draw_image_index,
             draw_extent,
             frame_count: 0,
+
+            gpu_resource_table,
+
+            gradient_pipeline,
         }
+    }
+
+    fn init_background_pipelines(
+        device: Arc<lv::Device>,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> lv::ComputePipeline {
+        let draw_shader = lv::Shader::new(
+            std::path::Path::new("./shaders/gradient.comp.spv"),
+            device.clone(),
+        );
+        let shader_entry_point = CString::new("main").unwrap();
+        let shader_stage_ci = vk::PipelineShaderStageCreateInfo {
+            s_type: vk::PipelineShaderStageCreateInfo::STRUCTURE_TYPE,
+            stage: vk::ShaderStageFlags::COMPUTE,
+            module: draw_shader.handle,
+            p_name: shader_entry_point.as_ptr(),
+            ..Default::default()
+        };
+        let pipeline_builder = lv::ComputePipelineBuilder::new()
+            .attach_stages(shader_stage_ci)
+            .set_layouts(vec![descriptor_set_layout]);
+        let pipeline = lv::ComputePipeline::from_builder(pipeline_builder, device.clone());
+        pipeline
+    }
+
+    fn init_pipelines(device: Arc<lv::Device>, descriptor_set_layout: vk::DescriptorSetLayout) {
+        VulkanApp::init_background_pipelines(device.clone(), descriptor_set_layout);
+    }
+
+    fn init_descriptors(
+        device: Arc<lv::Device>,
+        image: lv::AllocatedImage,
+    ) -> (lv::descriptors::GPUResourceTable, u32) {
+        let mut gpu_resource_table = lv::descriptors::GPUResourceTable::new(device.clone());
+        let id = gpu_resource_table.allocate_storage_image(image);
+        gpu_resource_table.update();
+
+        (gpu_resource_table, id)
     }
 
     fn get_current_frame(&self) -> &FrameData {
@@ -214,20 +269,26 @@ impl VulkanApp {
 
     fn draw_background(&self) {
         let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
-        let flash = (self.frame_count as f64).sin().abs();
-        let clear_value: vk::ClearColorValue = vk::ClearColorValue {
-            float32: [0.0f32, 0.0f32, flash as f32, 0.0f32],
-        };
-
-        let clear_range = utility::init::image_subresource_range(vk::ImageAspectFlags::COLOR);
         unsafe {
-            self.logical_device.handle.cmd_clear_color_image(
+            self.logical_device.handle.cmd_bind_pipeline(
                 command_buffer,
-                self.draw_image.get_handle(),
-                vk::ImageLayout::GENERAL,
-                &clear_value,
-                &[clear_range],
-            )
+                vk::PipelineBindPoint::COMPUTE,
+                self.gradient_pipeline.get_handle(),
+            );
+            self.logical_device.handle.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.gradient_pipeline.get_layout(),
+                0,
+                &[*self.gpu_resource_table.get_descriptor()],
+                &[],
+            );
+            self.logical_device.handle.cmd_dispatch(
+                command_buffer,
+                (self.swapchain.extent.width as f32 / 16.0f32).ceil() as u32,
+                (self.swapchain.extent.height as f32 / 16.0f32).ceil() as u32,
+                1,
+            );
         }
     }
 
@@ -305,11 +366,17 @@ impl VulkanApp {
                 .cmd_set_scissor(command_buffer, 0, &scissors);
         };
 
+        let draw_image = self
+            .gpu_resource_table
+            .get_storage_image(self.draw_image_index as usize)
+            .as_ref()
+            .unwrap();
+
         // transition image from swapchain to be rendered into
         utility::transition_image(
             &self.logical_device.handle,
             command_buffer,
-            self.draw_image.get_handle(),
+            draw_image.get_handle(),
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
             vk::QUEUE_FAMILY_IGNORED,
@@ -321,7 +388,7 @@ impl VulkanApp {
         utility::transition_image(
             &self.logical_device.handle,
             command_buffer,
-            self.draw_image.get_handle(),
+            draw_image.get_handle(),
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             vk::QUEUE_FAMILY_IGNORED,
@@ -341,7 +408,7 @@ impl VulkanApp {
         utility::copy_image_to_image(
             command_buffer,
             &self.logical_device,
-            self.draw_image.get_handle(),
+            draw_image.get_handle(),
             *self.swapchain.images.get(index).unwrap(),
             self.draw_extent,
             self.swapchain.extent,
@@ -543,6 +610,7 @@ impl VulkanApp {
             && physical_device.features_1_3.synchronization2 == vk::TRUE
             && physical_device.features_1_3.dynamic_rendering == vk::TRUE
             && physical_device.features_1_2.buffer_device_address == vk::TRUE
+            && physical_device.features_1_2.descriptor_indexing == vk::TRUE
             && physical_device.features.features.geometry_shader == vk::TRUE
             && physical_device.has_extensions(required_extensions)
         {

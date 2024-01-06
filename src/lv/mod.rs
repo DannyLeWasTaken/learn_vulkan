@@ -11,6 +11,8 @@ mod semaphore;
 mod shader;
 mod surface;
 mod swapchain;
+pub mod descriptors;
+pub mod traits;
 
 // Re-export everything
 pub use self::instance::*;

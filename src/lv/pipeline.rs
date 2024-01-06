@@ -1,5 +1,6 @@
 use crate::lv;
 use ash::vk;
+use ash::vk::TaggedStructure;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -185,9 +186,6 @@ pub struct Pipeline {
     device: Arc<lv::Device>,
 }
 
-/// Configuration of the lv Pipeline object
-pub struct PipelineConfiguration {}
-
 impl Pipeline {
     fn from_builder(builder: PipelineBuilder, device: Arc<lv::Device>) -> Self {
         let layout = unsafe {
@@ -245,6 +243,95 @@ impl Drop for Pipeline {
                 .handle
                 .destroy_pipeline_layout(self.layout, None);
             self.device.handle.destroy_pipeline(self.handle, None);
+        }
+    }
+}
+
+pub struct ComputePipeline {
+    handle: vk::Pipeline,
+    layout: vk::PipelineLayout,
+
+    // ref-counts
+    device: Arc<lv::Device>,
+}
+
+pub struct ComputePipelineBuilder {
+    handle: vk::ComputePipelineCreateInfo,
+    pipeline_layout: vk::PipelineLayoutCreateInfo,
+    layouts: Vec<vk::DescriptorSetLayout>,
+    shader_stage: vk::PipelineShaderStageCreateInfo,
+}
+
+impl ComputePipelineBuilder {
+    pub fn new() -> Self {
+        ComputePipelineBuilder {
+            handle: vk::ComputePipelineCreateInfo {
+                s_type: vk::ComputePipelineCreateInfo::STRUCTURE_TYPE,
+                ..Default::default()
+            },
+            pipeline_layout: vk::PipelineLayoutCreateInfo {
+                s_type: vk::PipelineLayoutCreateInfo::STRUCTURE_TYPE,
+                ..Default::default()
+            },
+            layouts: Vec::new(),
+            shader_stage: vk::PipelineShaderStageCreateInfo::default(),
+        }
+    }
+
+    pub fn set_layouts(mut self, layouts: Vec<vk::DescriptorSetLayout>) -> ComputePipelineBuilder {
+        self.layouts = layouts;
+        self.pipeline_layout.set_layout_count = self.layouts.len() as u32;
+        self.pipeline_layout.p_set_layouts = self.layouts.as_ptr();
+        self
+    }
+
+    pub fn attach_stages(mut self, stages: vk::PipelineShaderStageCreateInfo) -> Self {
+        self.shader_stage = stages;
+        self.handle.stage = self.shader_stage;
+        self
+    }
+}
+
+impl ComputePipeline {
+    pub fn from_builder(mut builder: ComputePipelineBuilder, device: Arc<lv::Device>) -> Self {
+        let layout = unsafe {
+            device
+                .handle
+                .create_pipeline_layout(&builder.pipeline_layout, None)
+                .unwrap()
+        };
+        builder.handle.layout = layout;
+        let pipeline = unsafe {
+            device
+                .handle
+                .create_compute_pipelines(vk::PipelineCache::null(), &[builder.handle], None)
+                .unwrap()
+        }
+        .pop()
+        .unwrap();
+        Self {
+            handle: pipeline,
+            layout,
+            device,
+        }
+    }
+
+    pub fn get_handle(&self) -> vk::Pipeline {
+        self.handle
+    }
+
+    pub fn get_layout(&self) -> vk::PipelineLayout {
+        self.layout
+    }
+}
+
+impl Drop for ComputePipeline {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .handle
+                .destroy_pipeline_layout(self.layout, None);
+            self.device.handle.destroy_pipeline(self.handle, None)
         }
     }
 }

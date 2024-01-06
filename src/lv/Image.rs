@@ -1,7 +1,9 @@
+use crate::lv::descriptors::DescriptorInfo;
 use crate::{lv, utility};
 use ash::vk;
-use ash::vk::ImageAspectFlags;
+use ash::vk::{ImageAspectFlags, TaggedStructure};
 use std::cell::RefCell;
+use std::ptr;
 use std::sync::{Arc, Mutex};
 
 pub struct AllocatedImage {
@@ -70,10 +72,15 @@ impl AllocatedImage {
     pub fn get_handle(&self) -> vk::Image {
         self.handle
     }
+
+    pub fn get_view(&self) -> vk::ImageView {
+        self.view
+    }
 }
 
 impl Drop for AllocatedImage {
     fn drop(&mut self) {
+        println!("Dropping image!");
         unsafe {
             self.device.handle.destroy_image_view(self.view, None);
             self.device.handle.destroy_image(self.handle, None);
@@ -82,5 +89,15 @@ impl Drop for AllocatedImage {
                 .free(std::mem::take(&mut self.allocation))
                 .unwrap();
         };
+    }
+}
+
+impl lv::traits::Resource for AllocatedImage {
+    fn get_descriptor(&self) -> DescriptorInfo {
+        DescriptorInfo::Image(vk::DescriptorImageInfo {
+            image_view: self.get_view().clone(),
+            image_layout: vk::ImageLayout::GENERAL,
+            sampler: vk::Sampler::null(),
+        })
     }
 }

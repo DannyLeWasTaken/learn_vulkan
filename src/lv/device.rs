@@ -1,6 +1,7 @@
 use crate::lv;
 use crate::utility::tools::vk_to_string;
 use ash::vk;
+use ash::vk::TaggedStructure;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CString};
 use std::sync::Arc;
@@ -196,9 +197,20 @@ impl Device {
             buffer_device_address_capture_replay: vk::TRUE,
             ..Default::default()
         };
+        let mut descriptor_indexing = vk::PhysicalDeviceDescriptorIndexingFeatures {
+            s_type: vk::PhysicalDeviceDescriptorIndexingFeatures::STRUCTURE_TYPE,
+            shader_sampled_image_array_non_uniform_indexing: vk::TRUE,
+            shader_storage_image_array_non_uniform_indexing: vk::TRUE,
+            descriptor_binding_sampled_image_update_after_bind: vk::TRUE,
+            descriptor_binding_storage_image_update_after_bind: vk::TRUE,
+            descriptor_binding_update_unused_while_pending: vk::TRUE,
+            descriptor_binding_partially_bound: vk::TRUE,
+            ..Default::default()
+        };
         dynamic_rendering_feature.p_next = &mut sync_2 as *mut _ as *mut c_void;
         physical_device_features.p_next = &mut dynamic_rendering_feature as *mut _ as *mut c_void;
         sync_2.p_next = &mut bda as *mut _ as *mut c_void;
+        bda.p_next = &mut descriptor_indexing as *mut _ as *mut c_void;
 
         let device_ci = vk::DeviceCreateInfo {
             s_type: vk::StructureType::DEVICE_CREATE_INFO,
