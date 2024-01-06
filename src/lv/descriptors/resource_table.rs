@@ -10,7 +10,6 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub enum DescriptorInfo {
     Image(vk::DescriptorImageInfo),
-    Sampler(vk::SamplerCreateInfo)
     Buffer(vk::DescriptorBufferInfo),
 }
 
