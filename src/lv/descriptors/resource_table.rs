@@ -19,7 +19,8 @@ struct DescriptorWrite {
     id: u64,
 }
 
-pub struct GPUResourceTable {
+/// SHAder Resource Table
+pub struct ShaRT {
     handle: vk::DescriptorSet,
     pool: vk::DescriptorPool,
     layout: vk::DescriptorSetLayout,
@@ -29,14 +30,16 @@ pub struct GPUResourceTable {
     device: Arc<lv::Device>,
 }
 
-impl GPUResourceTable {
+impl ShaRT {
     pub fn new(device: Arc<lv::Device>) -> Self {
         let types = [vk::DescriptorType::STORAGE_IMAGE];
-        let descriptor_flags = [
-            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND,
-            vk::DescriptorBindingFlags::PARTIALLY_BOUND,
-            vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING,
-        ];
+        let descriptor_flags: Vec<vk::DescriptorBindingFlags> = types
+            .iter()
+            .map(|_| {
+                vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                    | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+            })
+            .collect();
 
         let pool_sizes: Vec<vk::DescriptorPoolSize> = types
             .iter()
@@ -69,14 +72,13 @@ impl GPUResourceTable {
             binding_count: types.len() as u32,
             p_binding_flags: descriptor_flags.as_ptr(),
         };
-        let binding_flags: Vec<vk::DescriptorSetLayoutBindingFlagsCreateInfo> = (0..4)
-            .map(|_| vk::DescriptorSetLayoutBindingFlagsCreateInfo {
+        let binding_flags: vk::DescriptorSetLayoutBindingFlagsCreateInfo =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo {
                 s_type: vk::DescriptorSetLayoutBindingFlagsCreateInfo::STRUCTURE_TYPE,
                 p_next: ptr::null(),
                 binding_count: types.len() as u32,
                 p_binding_flags: descriptor_flags.as_ptr(),
-            })
-            .collect();
+            };
         let descriptor_bindings: Vec<vk::DescriptorSetLayoutBinding> = types
             .iter()
             .enumerate()
@@ -90,10 +92,10 @@ impl GPUResourceTable {
             .collect();
         let layout_ci = vk::DescriptorSetLayoutCreateInfo {
             s_type: vk::DescriptorSetLayoutCreateInfo::STRUCTURE_TYPE,
-            p_next: binding_flags.as_ptr() as *const _ as *const c_void,
+            p_next: &binding_flags as *const _ as *const c_void,
             binding_count: descriptor_bindings.len() as u32,
             p_bindings: descriptor_bindings.as_ptr(),
-            ..Default::default()
+            flags: vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL,
         };
 
         let layout = unsafe {
@@ -191,7 +193,7 @@ impl GPUResourceTable {
     }
 }
 
-impl Drop for GPUResourceTable {
+impl Drop for ShaRT {
     fn drop(&mut self) {
         unsafe {
             self.device.handle.destroy_descriptor_pool(self.pool, None);

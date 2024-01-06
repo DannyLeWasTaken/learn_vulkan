@@ -205,6 +205,7 @@ impl Device {
             descriptor_binding_storage_image_update_after_bind: vk::TRUE,
             descriptor_binding_update_unused_while_pending: vk::TRUE,
             descriptor_binding_partially_bound: vk::TRUE,
+            runtime_descriptor_array: vk::TRUE,
             ..Default::default()
         };
         dynamic_rendering_feature.p_next = &mut sync_2 as *mut _ as *mut c_void;

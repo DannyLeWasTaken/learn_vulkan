@@ -85,6 +85,7 @@ fn compile_shader(path: &Path, kind: shaderc::ShaderKind, output: &Path) {
 fn main() {
     //#[cfg(feature = "shaderc")]
     //compile_shaders();
+
     #[cfg(feature = "shaderc")]
     {
         let paths = fs::read_dir("./shaders").unwrap();

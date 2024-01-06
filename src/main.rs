@@ -21,6 +21,7 @@ const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 const FRAME_OVERLAP: u32 = 2;
 
+#[derive()]
 struct ValidationInfo {
     pub is_enabled: bool,
     pub required_validation_layers: [&'static str; 1],
@@ -41,7 +42,7 @@ struct VulkanApp {
     frames: Vec<FrameData>,
     frame_count: u64,
 
-    gpu_resource_table: lv::descriptors::GPUResourceTable,
+    gpu_resource_table: lv::descriptors::ShaRT,
 
     gradient_pipeline: Rc<lv::ComputePipeline>,
 }
@@ -253,8 +254,8 @@ impl VulkanApp {
     fn init_descriptors(
         device: Arc<lv::Device>,
         image: lv::AllocatedImage,
-    ) -> (lv::descriptors::GPUResourceTable, u32) {
-        let mut gpu_resource_table = lv::descriptors::GPUResourceTable::new(device.clone());
+    ) -> (lv::descriptors::ShaRT, u32) {
+        let mut gpu_resource_table = lv::descriptors::ShaRT::new(device.clone());
         let id = gpu_resource_table.allocate_storage_image(image);
         gpu_resource_table.update();
 
@@ -611,6 +612,7 @@ impl VulkanApp {
             && physical_device.features_1_3.dynamic_rendering == vk::TRUE
             && physical_device.features_1_2.buffer_device_address == vk::TRUE
             && physical_device.features_1_2.descriptor_indexing == vk::TRUE
+            && physical_device.features_1_2.runtime_descriptor_array == vk::TRUE
             && physical_device.features.features.geometry_shader == vk::TRUE
             && physical_device.has_extensions(required_extensions)
         {
