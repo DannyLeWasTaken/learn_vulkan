@@ -32,7 +32,6 @@ struct VulkanApp {
     logical_device: Arc<lv::Device>,
     allocator: Arc<Mutex<gpu_allocator::vulkan::Allocator>>,
     swapchain: lv::Swapchain,
-    pipeline: Rc<lv::Pipeline>,
 
     draw_extent: vk::Extent2D,
     draw_image_index: u32,
@@ -42,6 +41,7 @@ struct VulkanApp {
     gpu_resource_table: lv::descriptors::ShaRT,
 
     gradient_pipeline: Rc<lv::ComputePipeline>,
+    triangle_pipeline: Rc<lv::Pipeline>,
 }
 
 const VALIDATION: ValidationInfo = ValidationInfo {
@@ -162,8 +162,11 @@ impl VulkanApp {
             allocator.clone(),
         );
 
-        let pipeline =
-            VulkanApp::create_graphics_pipeline(logical_device.clone(), &swapchain_support);
+        let triangle_pipeline = VulkanApp::create_triangle_pipeline(
+            logical_device.clone(),
+            &swapchain_support,
+            draw_image.get_format(),
+        );
         let mut frames: Vec<FrameData> = Vec::with_capacity(FRAME_OVERLAP as usize);
         for _ in 0..FRAME_OVERLAP {
             let pool = lv::CommandPool::new(
@@ -205,7 +208,6 @@ impl VulkanApp {
             allocator,
             surface,
             swapchain,
-            pipeline,
             frames,
             draw_image_index,
             draw_extent,
@@ -214,6 +216,7 @@ impl VulkanApp {
             gpu_resource_table,
 
             gradient_pipeline,
+            triangle_pipeline,
         }
     }
 
@@ -250,10 +253,6 @@ impl VulkanApp {
         pipeline
     }
 
-    fn init_pipelines(device: Arc<lv::Device>, descriptor_set_layout: vk::DescriptorSetLayout) {
-        VulkanApp::init_background_pipelines(device.clone(), descriptor_set_layout);
-    }
-
     fn init_descriptors(
         device: Arc<lv::Device>,
         image: lv::AllocatedImage,
@@ -271,6 +270,71 @@ impl VulkanApp {
             .unwrap()
     }
 
+    fn draw_geometry(&self) {
+        let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
+        let draw_image = self
+            .gpu_resource_table
+            .get_storage_image(self.draw_image_index as usize)
+            .as_ref()
+            .unwrap();
+        let draw_image_attachment = utility::init::attachment_info(
+            draw_image.get_view(),
+            None,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
+        let rendering_info = vk::RenderingInfo {
+            s_type: vk::RenderingInfo::STRUCTURE_TYPE,
+            flags: Default::default(),
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: self.draw_extent.width,
+                    height: self.draw_extent.height,
+                },
+            },
+            layer_count: 1,
+            view_mask: 0,
+            color_attachment_count: 1,
+            p_color_attachments: [draw_image_attachment].as_ptr(),
+            ..Default::default()
+        };
+        unsafe {
+            self.logical_device
+                .handle
+                .cmd_begin_rendering(command_buffer, &rendering_info);
+            self.logical_device.handle.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.triangle_pipeline.get_handle(),
+            )
+        }
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.draw_extent.width as f32,
+            height: self.draw_extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        unsafe {
+            self.logical_device
+                .handle
+                .cmd_set_viewport(command_buffer, 0, &[viewport]);
+        }
+        let scissor: vk::Rect2D = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D::into(self.draw_extent),
+        };
+        unsafe {
+            self.logical_device
+                .handle
+                .cmd_set_scissor(command_buffer, 0, &[scissor]);
+            self.logical_device
+                .handle
+                .cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.logical_device.handle.cmd_end_rendering(command_buffer);
+        }
+    }
     fn draw_background(&self) {
         let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
         unsafe {
@@ -316,13 +380,6 @@ impl VulkanApp {
         let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
         self.draw_extent = self.swapchain.extent;
 
-        unsafe {
-            self.logical_device
-                .handle
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
-                .unwrap()
-        }
-
         let color_attachment = utility::init::attachment_info(
             *self.swapchain.image_views.get(index).unwrap(),
             Some(vk::ClearValue::default()),
@@ -340,52 +397,6 @@ impl VulkanApp {
                 .unwrap();
         }
 
-        /*
-        let rendering_info = vk::RenderingInfo {
-            s_type: vk::StructureType::RENDERING_INFO,
-            flags: vk::RenderingFlags::empty(),
-            layer_count: 1,
-            view_mask: 0,
-            color_attachment_count: 1,
-            render_area: vk::Rect2D {
-                extent: self.swapchain.extent,
-                offset: vk::Offset2D::default(),
-            },
-            p_color_attachments: &color_attachment,
-            ..Default::default()
-        };
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_begin_rendering(command_buffer, &rendering_info);
-        }
-         */
-
-        // Recall we have set viewport + scissor as dynamic and not fixed
-        let viewports = [vk::Viewport {
-            x: 0.0f32,
-            y: 0.0f32,
-            width: self.swapchain.extent.width as f32,
-            height: self.swapchain.extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 0.0,
-        }];
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_set_viewport(command_buffer, 0, &viewports);
-        }
-
-        let scissors = [vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: self.swapchain.extent,
-        }];
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_set_scissor(command_buffer, 0, &scissors);
-        };
-
         let draw_image = self
             .gpu_resource_table
             .get_storage_image(self.draw_image_index as usize)
@@ -402,14 +413,25 @@ impl VulkanApp {
             vk::QUEUE_FAMILY_IGNORED,
             vk::QUEUE_FAMILY_IGNORED,
         );
-        self.draw_background();
+        //self.draw_background();
+
+        utility::transition_image(
+            &self.logical_device.handle,
+            command_buffer,
+            draw_image.get_handle(),
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        );
+        self.draw_geometry();
 
         // transition image into their connect transfer layout
         utility::transition_image(
             &self.logical_device.handle,
             command_buffer,
             draw_image.get_handle(),
-            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             vk::QUEUE_FAMILY_IGNORED,
             vk::QUEUE_FAMILY_IGNORED,
@@ -453,125 +475,14 @@ impl VulkanApp {
                 .end_command_buffer(command_buffer)
                 .unwrap()
         }
-
-        /*
-        // reset current buffer
-        unsafe {
-            self.logical_device
-                .handle
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
-                .unwrap()
-        }
-
-        let color_attachment = utility::init::attachment_info(
-            *self.swapchain.image_views.get(index).unwrap(),
-            Some(vk::ClearValue::default()),
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        );
-        unsafe {
-            let command_buffer_bi = vk::CommandBufferBeginInfo {
-                s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
-                flags: vk::CommandBufferUsageFlags::SIMULTANEOUS_USE,
-                ..Default::default()
-            };
-            self.logical_device
-                .handle
-                .begin_command_buffer(command_buffer, &command_buffer_bi)
-                .unwrap();
-        }
-        // Transition into writing
-        utility::transition_image(
-            &self.logical_device.handle,
-            command_buffer,
-            *self.swapchain.images.get(index).unwrap(),
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-        );
-
-        let rendering_info = vk::RenderingInfo {
-            s_type: vk::StructureType::RENDERING_INFO,
-            flags: vk::RenderingFlags::empty(),
-            layer_count: 1,
-            view_mask: 0,
-            color_attachment_count: 1,
-            render_area: vk::Rect2D {
-                extent: self.swapchain.extent,
-                offset: vk::Offset2D::default(),
-            },
-            p_color_attachments: &color_attachment,
-            ..Default::default()
-        };
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_begin_rendering(command_buffer, &rendering_info);
-            self.logical_device.handle.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.get_handle(),
-            );
-        }
-
-        // Recall we have set viewport + scissor as dynamic and not fixed
-        let viewports = [vk::Viewport {
-            x: 0.0f32,
-            y: 0.0f32,
-            width: self.swapchain.extent.width as f32,
-            height: self.swapchain.extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 0.0,
-        }];
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_set_viewport(command_buffer, 0, &viewports);
-        }
-
-        let scissors = [vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: self.swapchain.extent,
-        }];
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_set_scissor(command_buffer, 0, &scissors);
-        };
-
-        // Draw
-        unsafe {
-            self.logical_device
-                .handle
-                .cmd_draw(command_buffer, 3, 1, 0, 0);
-        };
-
-        unsafe {
-            self.logical_device.handle.cmd_end_rendering(command_buffer);
-
-            utility::transition_image(
-                &self.logical_device.handle,
-                command_buffer,
-                *self.swapchain.images.get(index).unwrap(),
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::PRESENT_SRC_KHR,
-                vk::QUEUE_FAMILY_IGNORED,
-                vk::QUEUE_FAMILY_IGNORED,
-            );
-
-            self.logical_device
-                .handle
-                .end_command_buffer(command_buffer)
-                .unwrap();
-        };
-        */
     }
-    fn create_graphics_pipeline(
+    fn create_triangle_pipeline(
         device: Arc<lv::Device>,
         swapchain_support: &lv::SwapchainSupportDetails,
+        color_format: vk::Format,
     ) -> Rc<lv::Pipeline> {
         let vertex_shader = lv::Shader::new(
-            std::path::Path::new("./shaders/triangle.vert.spv"),
+            std::path::Path::new("./shaders/colored_triangle.vert.spv"),
             device.clone(),
         );
         let shader_entry_point = CString::new("main").unwrap();
@@ -583,7 +494,7 @@ impl VulkanApp {
             ..Default::default()
         };
         let fragment_shader = lv::Shader::new(
-            std::path::Path::new("./shaders/triangle.frag.spv"),
+            std::path::Path::new("./shaders/colored_triangle.frag.spv"),
             device.clone(),
         );
         let fragment_shader_stage_info = vk::PipelineShaderStageCreateInfo {
@@ -594,19 +505,20 @@ impl VulkanApp {
             ..Default::default()
         };
         let shader_stages = vec![vert_shader_stage_info, fragment_shader_stage_info];
+        /*
+        let formats: Vec<vk::Format> = swapchain_support
+            .formats
+            .iter()
+            .map(|format| format.format)
+            .collect();
+         */
+        let formats = vec![color_format];
         let pipeline = Rc::new(
             lv::PipelineBuilder::new()
                 .set_viewport_counts(1, 1)
                 .dynamic_states(vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
                 .attach_shaders_stages(shader_stages)
-                .color_attachments(
-                    1,
-                    swapchain_support
-                        .formats
-                        .iter()
-                        .map(|format| format.format)
-                        .collect(),
-                )
+                .color_attachments(formats.len() as u32, formats)
                 .build(device.clone()),
         );
         pipeline

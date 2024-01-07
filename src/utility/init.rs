@@ -84,4 +84,3 @@ pub fn command_buffer_begin_info(flags: vk::CommandBufferUsageFlags) -> vk::Comm
         ..Default::default()
     }
 }
-

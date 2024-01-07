@@ -76,6 +76,10 @@ impl AllocatedImage {
     pub fn get_view(&self) -> vk::ImageView {
         self.view
     }
+
+    pub fn get_format(&self) -> vk::Format {
+        self.format
+    }
 }
 
 impl Drop for AllocatedImage {
