@@ -49,18 +49,6 @@ const VALIDATION: ValidationInfo = ValidationInfo {
     required_validation_layers: ["VK_LAYER_KHRONOS_validation"],
 };
 
-const DEVICE_EXTENSIONS: [&str; 1] = ["VK_KHR_swapchain"];
-fn convert_static_str_to_string(vec_str: &'static str) -> String {
-    vec_str.to_string()
-}
-
-fn convert_i8_to_string(extensions: Vec<*const i8>) -> Vec<String> {
-    extensions
-        .iter()
-        .map(|&ext| unsafe { std::ffi::CStr::from_ptr(ext).to_string_lossy().to_string() })
-        .collect()
-}
-
 #[repr(C)]
 struct ComputePushConstants {
     data1: [f32; 4],
