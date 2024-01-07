@@ -1,6 +1,7 @@
 use crate::lv;
 use ash::vk;
 use ash::vk::TaggedStructure;
+use std::cmp::max_by;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -260,6 +261,7 @@ pub struct ComputePipelineBuilder {
     pipeline_layout: vk::PipelineLayoutCreateInfo,
     layouts: Vec<vk::DescriptorSetLayout>,
     shader_stage: vk::PipelineShaderStageCreateInfo,
+    push_constant_range: Vec<vk::PushConstantRange>,
 }
 
 impl ComputePipelineBuilder {
@@ -275,6 +277,7 @@ impl ComputePipelineBuilder {
             },
             layouts: Vec::new(),
             shader_stage: vk::PipelineShaderStageCreateInfo::default(),
+            push_constant_range: Vec::new(),
         }
     }
 
@@ -290,10 +293,21 @@ impl ComputePipelineBuilder {
         self.handle.stage = self.shader_stage;
         self
     }
+
+    pub fn attach_push_constant(mut self, push_constant_range: vk::PushConstantRange) -> Self {
+        self.push_constant_range.push(push_constant_range);
+        self.pipeline_layout.p_push_constant_ranges = self.push_constant_range.as_ptr();
+        self.pipeline_layout.push_constant_range_count = self.push_constant_range.len() as u32;
+        self
+    }
 }
 
 impl ComputePipeline {
     pub fn from_builder(mut builder: ComputePipelineBuilder, device: Arc<lv::Device>) -> Self {
+        println!(
+            "Push constant range count: {:?}",
+            builder.pipeline_layout.push_constant_range_count
+        );
         let layout = unsafe {
             device
                 .handle

@@ -1,11 +1,8 @@
-use std::cell::RefCell;
-use std::ffi::CString;
-
 use crate::frame::FrameData;
-use crate::lv::traits::Resource;
 use ash::vk::TaggedStructure;
 use ash::{self, vk};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use std::ffi::CString;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use winit::{self};
@@ -62,6 +59,14 @@ fn convert_i8_to_string(extensions: Vec<*const i8>) -> Vec<String> {
         .iter()
         .map(|&ext| unsafe { std::ffi::CStr::from_ptr(ext).to_string_lossy().to_string() })
         .collect()
+}
+
+#[repr(C)]
+struct ComputePushConstants {
+    data1: [f32; 4],
+    data2: [f32; 4],
+    data3: [f32; 4],
+    data4: [f32; 4],
 }
 
 impl VulkanApp {
@@ -200,7 +205,7 @@ impl VulkanApp {
             VulkanApp::init_descriptors(logical_device.clone(), draw_image);
         let gradient_pipeline = VulkanApp::init_background_pipelines(
             logical_device.clone(),
-            gpu_resource_table.get_layout().clone(),
+            *gpu_resource_table.get_layout(),
         );
         let gradient_pipeline = Rc::new(gradient_pipeline);
 
@@ -240,9 +245,19 @@ impl VulkanApp {
             p_name: shader_entry_point.as_ptr(),
             ..Default::default()
         };
+        let push_constant = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::COMPUTE,
+            offset: 0,
+            size: std::mem::size_of::<ComputePushConstants>() as u32,
+        };
+        println!(
+            "Size: {:?}",
+            std::mem::size_of::<ComputePushConstants>() as u32
+        );
         let pipeline_builder = lv::ComputePipelineBuilder::new()
             .attach_stages(shader_stage_ci)
-            .set_layouts(vec![descriptor_set_layout]);
+            .set_layouts(vec![descriptor_set_layout])
+            .attach_push_constant(push_constant);
         let pipeline = lv::ComputePipeline::from_builder(pipeline_builder, device.clone());
         pipeline
     }
@@ -283,6 +298,22 @@ impl VulkanApp {
                 0,
                 &[*self.gpu_resource_table.get_descriptor()],
                 &[],
+            );
+            let pc = ComputePushConstants {
+                data1: glam::Vec4::new(1.0, 0.0, 0.0, 1.0).to_array(),
+                data2: glam::Vec4::new(0.0, 0.0, 1.0, 1.0).to_array(),
+                data3: glam::Vec4::ZERO.to_array(),
+                data4: glam::Vec4::ZERO.to_array(),
+            };
+            self.logical_device.handle.cmd_push_constants(
+                command_buffer,
+                self.gradient_pipeline.get_layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                std::slice::from_raw_parts(
+                    &pc as *const _ as *const u8,
+                    std::mem::size_of::<ComputePushConstants>(),
+                ),
             );
             self.logical_device.handle.cmd_dispatch(
                 command_buffer,
