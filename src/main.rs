@@ -80,6 +80,7 @@ impl VulkanApp {
                 .to_string_lossy()
                 .into_owned(),
             // RT extensions
+            /*
             ash::extensions::khr::DeferredHostOperations::name()
                 .to_string_lossy()
                 .into_owned(),
@@ -89,6 +90,8 @@ impl VulkanApp {
             ash::extensions::khr::RayTracingPipeline::name()
                 .to_string_lossy()
                 .into_owned(),
+
+             */
         ];
 
         let surface_loader =
@@ -277,11 +280,8 @@ impl VulkanApp {
             .get_storage_image(self.draw_image_index as usize)
             .as_ref()
             .unwrap();
-        let draw_image_attachment = utility::init::attachment_info(
-            draw_image.get_view(),
-            None,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        );
+        let draw_image_attachment =
+            utility::init::attachment_info(draw_image.get_view(), None, vk::ImageLayout::GENERAL);
         let rendering_info = vk::RenderingInfo {
             s_type: vk::RenderingInfo::STRUCTURE_TYPE,
             flags: Default::default(),
@@ -329,9 +329,11 @@ impl VulkanApp {
             self.logical_device
                 .handle
                 .cmd_set_scissor(command_buffer, 0, &[scissor]);
+
             self.logical_device
                 .handle
                 .cmd_draw(command_buffer, 3, 1, 0, 0);
+
             self.logical_device.handle.cmd_end_rendering(command_buffer);
         }
     }
@@ -380,11 +382,6 @@ impl VulkanApp {
         let command_buffer = self.get_current_frame().main_command_buffer.get_handle();
         self.draw_extent = self.swapchain.extent;
 
-        let color_attachment = utility::init::attachment_info(
-            *self.swapchain.image_views.get(index).unwrap(),
-            Some(vk::ClearValue::default()),
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        );
         unsafe {
             let command_buffer_bi = vk::CommandBufferBeginInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
@@ -413,7 +410,7 @@ impl VulkanApp {
             vk::QUEUE_FAMILY_IGNORED,
             vk::QUEUE_FAMILY_IGNORED,
         );
-        //self.draw_background();
+        self.draw_background();
 
         utility::transition_image(
             &self.logical_device.handle,
@@ -468,8 +465,6 @@ impl VulkanApp {
         );
 
         unsafe {
-            //self.logical_device.handle.cmd_end_rendering(command_buffer);
-
             self.logical_device
                 .handle
                 .end_command_buffer(command_buffer)
@@ -513,14 +508,17 @@ impl VulkanApp {
             .collect();
          */
         let formats = vec![color_format];
-        let pipeline = Rc::new(
-            lv::PipelineBuilder::new()
-                .set_viewport_counts(1, 1)
-                .dynamic_states(vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
-                .attach_shaders_stages(shader_stages)
-                .color_attachments(formats.len() as u32, formats)
-                .build(device.clone()),
-        );
+        let builder = lv::PipelineBuilder::new()
+            .dynamic_states(vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+            .attach_shaders_stages(shader_stages)
+            .color_attachments(formats.len() as u32, formats)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .set_multisampling_none()
+            .disable_blending()
+            .disable_depthtest();
+        let pipeline = Rc::new(lv::Pipeline::from_builder(builder, device.clone()));
         pipeline
     }
 
